@@ -371,18 +371,21 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
             else drawTile(ctx, cell);
           }));
 
-          // Highlights — reachable и targetable не должны накладываться
-          const targetSet = new Set(state.targetableCells.map(c => `${c.x},${c.y}`));
-          state.reachableCells.forEach(c => {
-            // Не рисуем движение там, где уже есть зона атаки
-            if (targetSet.has(`${c.x},${c.y}`)) return;
-            const cell = state.grid[c.y]?.[c.x];
-            if (cell) drawHighlight(ctx, cell, jumpMode ? 'jump' : 'move');
-          });
-          state.targetableCells.forEach(c => {
-            const cell = state.grid[c.y]?.[c.x];
-            if (cell) drawHighlight(ctx, cell, 'attack');
-          });
+          // Highlights — только одна зона за раз: атака ИЛИ движение, не обе
+          const hasSkill = !!state.selectedSkill;
+          if (!hasSkill) {
+            // Нет выбранного скилла — показываем зону движения
+            state.reachableCells.forEach(c => {
+              const cell = state.grid[c.y]?.[c.x];
+              if (cell) drawHighlight(ctx, cell, jumpMode ? 'jump' : 'move');
+            });
+          } else {
+            // Выбран скилл — показываем только зону атаки
+            state.targetableCells.forEach(c => {
+              const cell = state.grid[c.y]?.[c.x];
+              if (cell) drawHighlight(ctx, cell, 'attack');
+            });
+          }
 
           // Infinity Step: рисуем круговой радиус досягаемости (5 клеток = 25 футов)
           if (state.selectedSkill?.id === 'gojo_blink') {
@@ -869,11 +872,9 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
 
               const active = battleState.selectedSkill?.id === sk.id;
               const onCd = sk.currentCooldown > 0;
-              const hasMoved = (curPlayer.movementLeft ?? curPlayer.speed) < curPlayer.speed;
-              const blockedByMove = sk.actionCost === 'action' && hasMoved;
               const noAct = (sk.actionCost === 'action' && !curPlayer.hasAction)
                 || (sk.actionCost === 'bonus_action' && !curPlayer.hasBonusAction);
-              const dis = !isPlayerTurn || onCd || noAct || curPlayer.isUnconscious || blockedByMove;
+              const dis = !isPlayerTurn || onCd || noAct || curPlayer.isUnconscious;
 
               return (
                 <button key={sk.id} onClick={() => handleSkillClick(sk)} disabled={dis}
@@ -907,7 +908,7 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
             <div className="text-purple-600 text-xs font-mono tracking-widest uppercase mt-2 mb-1">— Действия —</div>
             <div className="grid grid-cols-2 gap-1">
               {[
-                { label:'Движение', icon:'👟', active: battleState.movementMode && !jumpMode, disabled: !isPlayerTurn || (curPlayer?.movementLeft ?? 0) <= 0 || !curPlayer?.hasAction, action: () => { setJumpMode(false); onBattleUpdate(toggleMovement(battleState, curUnit.data.id)); }, hint: !curPlayer?.hasAction ? 'Нельзя двигаться после атаки' : undefined },
+                { label:'Движение', icon:'👟', active: battleState.movementMode && !jumpMode, disabled: !isPlayerTurn || (curPlayer?.movementLeft ?? 0) <= 0, action: () => { setJumpMode(false); onBattleUpdate(toggleMovement(battleState, curUnit.data.id)); } },
                 { label:'Прыжок', icon:'⬆', active: jumpMode, disabled: !isPlayerTurn || !curPlayer?.hasBonusAction, action: () => { setJumpMode(!jumpMode); onBattleUpdate({ ...battleState, movementMode: !jumpMode, selectedSkill: null }); } },
                 { label:'Рывок', icon:'💨', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction, action: () => onBattleUpdate(doDash(battleState, curUnit.data.id)) },
                 { label:'Отход', icon:'🚶', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction, action: () => onBattleUpdate(doDisengage(battleState, curUnit.data.id)) },

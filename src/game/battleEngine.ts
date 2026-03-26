@@ -138,12 +138,6 @@ export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: n
   const unit = getUnitById(state, unitId);
   if (!unit) return state;
 
-  // Нельзя двигаться если уже атаковал в этот ход (action использован на атаку)
-  // Признак: действие использовано (hasAction=false) — движение запрещено
-  if (!unit.data.hasAction && unit.kind === 'player') {
-    return { ...state, log: [...state.log, mkLog(`❌ Нельзя двигаться после атаки!`, 'info')].slice(-LOG_MAX) };
-  }
-
   const { data } = unit;
   const cell = state.grid[toY]?.[toX];
   if (!cell) return state;
@@ -216,12 +210,6 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   const atk = attacker.data;
   const tgt = targetUnit.data;
 
-  // Нельзя атаковать если уже двигался в этот ход (только для игроков, не реакции/бонус)
-  const hasMoved = atk.movementLeft < atk.speed;
-  if (hasMoved && attacker.kind === 'player' && skill.actionCost === 'action') {
-    return { ...state, log: [...state.log, mkLog(`❌ Нельзя атаковать после движения!`, 'info')].slice(-LOG_MAX) };
-  }
-
   // Range check
   const distFt = distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY);
   // Range check: melee = exactly 5 ft (adjacent), ranged = up to skill.range ft
@@ -232,10 +220,6 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
 
   // ── Lapse Blue: pull enemy to attacker, damage, then push 5 cells ─────────
   if (skill.id === 'lapse_blue') {
-    // Проверка: нельзя атаковать после движения
-    if (atk.movementLeft < atk.speed && attacker.kind === 'player') {
-      return { ...state, log: [...state.log, mkLog(`❌ Нельзя атаковать после движения!`, 'info')].slice(-LOG_MAX) };
-    }
     const actionPatch2: Partial<Character & Enemy> = { hasAction: false };
     let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch2 } as typeof u.data }));
     const blueLogs: BattleLog[] = [];
