@@ -13,6 +13,7 @@ interface Props {
   onBattleUpdate: (s: BattleState) => void;
   onVictory: (state: BattleState) => void;
   onDefeat: () => void;
+  isLocalPvp?: boolean;
 }
 
 // ─── ANIM TYPES ──────────────────────────────────────────────────────────────
@@ -250,7 +251,7 @@ function drawUnit(
 }
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
-export default function BattleScreen({ battleState, onBattleUpdate, onVictory, onDefeat }: Props) {
+export default function BattleScreen({ battleState, onBattleUpdate, onVictory, onDefeat, isLocalPvp = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
@@ -299,9 +300,12 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   battleRef.current = battleState;
 
   const curUnit = getCurrentUnit(battleState);
+  // В localPvP оба юнита — player, поэтому всегда isPlayerTurn
   const isPlayerTurn = curUnit.kind === 'player' && !processing;
   const curPlayer = curUnit.kind === 'player' ? curUnit.data : null;
   const hasCursedEnergy = !!(curPlayer && curPlayer.maxCursedEnergy > 0);
+  // Имя текущего игрока в localPvP
+  const localPvpPlayerLabel = isLocalPvp ? `Игрок ${curUnit.teamId + 1}` : null;
 
   // ── Sync grid positions → visual positions ──────────────────────────────────
   useEffect(() => {
@@ -489,7 +493,11 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   // End check
   useEffect(() => {
     if (battleState.phase === 'victory') { onVictory(battleState); return; }
-    if (battleState.phase === 'defeat') { onDefeat(); return; }
+    // В localPvP поражение = другой игрок победил, тоже вызываем onVictory
+    if (battleState.phase === 'defeat') {
+      if (isLocalPvp) { onVictory(battleState); return; }
+      onDefeat();
+    }
   }, [battleState.phase]);
 
   // ── Helper: trigger flash ───────────────────────────────────────────────────
@@ -508,9 +516,9 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     skillFxRef.current = [...skillFxRef.current, { id, kind, x, y, startMs: performance.now(), durationMs }];
   };
 
-  // ── Enemy AI ─────────────────────────────────────────────────────────────────
+  // ── Enemy AI (не работает в localPvP — оба игрока управляют сами) ───────────
   useEffect(() => {
-    if (curUnit.kind !== 'enemy' || processing || battleState.phase !== 'active') return;
+    if (isLocalPvp || curUnit.kind !== 'enemy' || processing || battleState.phase !== 'active') return;
     setProcessing(true);
     const t = setTimeout(() => {
       const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
@@ -773,8 +781,15 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
         </div>
         <div className="ml-auto flex gap-2 items-center">
           <span className="text-purple-600 text-xs font-mono">Р.{battleState.round}</span>
-          <div className={`px-2 py-0.5 rounded text-xs font-black border ${isPlayerTurn ? 'border-blue-500/40 bg-blue-600/10 text-blue-300' : 'border-red-500/25 bg-red-600/8 text-red-300'}`}>
-            {isPlayerTurn ? '▶ ВАШ ХОД' : processing ? '⏳' : '⚔ ВРАГ'}
+          <div className={`px-2 py-0.5 rounded text-xs font-black border`}
+            style={{
+              borderColor: isLocalPvp ? `${curUnit.data.color}60` : isPlayerTurn ? '#3b82f680' : '#ef444440',
+              backgroundColor: isLocalPvp ? `${curUnit.data.color}15` : isPlayerTurn ? '#2563eb10' : '#ef444410',
+              color: isLocalPvp ? curUnit.data.color : isPlayerTurn ? '#93c5fd' : '#fca5a5',
+            }}>
+            {isLocalPvp
+              ? `▶ ${localPvpPlayerLabel}: ${curUnit.data.name}`
+              : isPlayerTurn ? '▶ ВАШ ХОД' : processing ? '⏳' : '⚔ ВРАГ'}
           </div>
         </div>
       </div>
@@ -818,6 +833,24 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
                 <span className={`text-xs px-1 py-0.5 rounded border font-bold ${curPlayer.hasReaction ? 'border-purple-500/50 text-purple-400' : 'border-white/10 text-white/20 line-through'}`}>🛡Р</span>
                 <span className="text-xs px-1 py-0.5 rounded border border-blue-500/40 text-blue-400 font-bold">{curPlayer.movementLeft}ф</span>
               </div>
+              {/* Cursed Energy cells (Gojo only) */}
+              {curPlayer.maxCursedEnergy > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs text-cyan-600 font-mono mb-1">⚡ Ячейки</div>
+                  <div className="flex gap-1">
+                    {Array.from({ length: curPlayer.maxCursedEnergy }).map((_, i) => (
+                      <div key={i} className="w-5 h-5 rounded border-2 flex items-center justify-center"
+                        style={{
+                          borderColor: i < curPlayer.cursedEnergy ? '#06b6d4' : '#1e3a3a',
+                          backgroundColor: i < curPlayer.cursedEnergy ? '#06b6d420' : 'transparent',
+                        }}>
+                        {i < curPlayer.cursedEnergy && <div className="w-2 h-2 rounded-full bg-cyan-400" />}
+                      </div>
+                    ))}
+                    <span className="text-xs text-cyan-500 font-mono ml-1 self-center">{curPlayer.cursedEnergy}/{curPlayer.maxCursedEnergy}</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -888,7 +921,8 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
               const onCd = sk.currentCooldown > 0;
               const noAct = (sk.actionCost === 'action' && !curPlayer.hasAction)
                 || (sk.actionCost === 'bonus_action' && !curPlayer.hasBonusAction);
-              const dis = !isPlayerTurn || onCd || noAct || curPlayer.isUnconscious;
+              const noEnergy = sk.energyCost > 0 && curPlayer.cursedEnergy < sk.energyCost;
+              const dis = !isPlayerTurn || onCd || noAct || noEnergy || curPlayer.isUnconscious;
 
               return (
                 <button key={sk.id} onClick={() => handleSkillClick(sk)} disabled={dis}
@@ -927,7 +961,7 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
                 { label:'Рывок', icon:'💨', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction, action: () => onBattleUpdate(doDash(battleState, curUnit.data.id)) },
                 { label:'Отход', icon:'🚶', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction, action: () => onBattleUpdate(doDisengage(battleState, curUnit.data.id)) },
                 { label:'Кола', icon:'🥤', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction, action: () => onBattleUpdate(doCallCola(battleState, curUnit.data.id)) },
-                { label:'Отдышка', icon:'💨', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction || !curPlayer?.hasBonusAction || !hasCursedEnergy, action: () => onBattleUpdate(doCatchBreath(battleState, curUnit.data.id)), hint: !hasCursedEnergy ? 'Нет ячеек' : undefined },
+                { label:'Отдышка', icon:'🌀', active: false, disabled: !isPlayerTurn || !curPlayer?.hasAction || !hasCursedEnergy || (curPlayer?.cursedEnergy ?? 0) >= (curPlayer?.maxCursedEnergy ?? 0), action: () => onBattleUpdate(doCatchBreath(battleState, curUnit.data.id)), hint: !hasCursedEnergy ? 'Нет ячеек' : undefined },
               ].map(b => (
                 <button key={b.label} onClick={b.action} disabled={b.disabled} title={(b as {hint?:string}).hint}
                   className="py-1.5 px-1.5 rounded-lg border text-xs font-bold transition-all disabled:opacity-22 disabled:cursor-not-allowed"

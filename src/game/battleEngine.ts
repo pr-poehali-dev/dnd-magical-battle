@@ -55,6 +55,41 @@ export const initBattle = (
   };
 };
 
+/** Локальный PvP: два игрока за одним компьютером, оба — player, разные команды */
+export const initLocalPvP = (p1: Character, p2: Character): BattleState => {
+  const allUnits: BattleUnit[] = [
+    {
+      kind: 'player',
+      data: { ...p1, gridX: 1, gridY: 5, statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: p1.speed },
+      teamId: 0, turnIndex: rollDieN(20) + getModifier(p1.abilityScores.dex),
+    },
+    {
+      kind: 'player',
+      data: { ...p2, gridX: GRID_COLS - 2, gridY: 5, statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: p2.speed },
+      teamId: 1, turnIndex: rollDieN(20) + getModifier(p2.abilityScores.dex),
+    },
+  ].sort((a, b) => b.turnIndex - a.turnIndex);
+
+  const grid = generateForestGrid();
+  return {
+    units: allUnits,
+    currentUnitIndex: 0,
+    round: 1,
+    grid,
+    log: [mkLog(`⚔ Локальный PvP! Ходит: ${allUnits[0].data.name}`, 'system')],
+    animQueue: [],
+    phase: 'active',
+    selectedUnitId: null,
+    selectedSkill: null,
+    movementMode: false,
+    reachableCells: [],
+    targetableCells: [],
+    disengage: new Set(),
+    unitsOnTree: new Set(),
+    winTeam: undefined,
+  };
+};
+
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 export const getCurrentUnit = (state: BattleState): BattleUnit =>
   state.units[state.currentUnitIndex % state.units.length];
@@ -220,7 +255,17 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
 
   // ── Lapse Blue: 100% попадание, притягивает врага, бьёт, отбрасывает на 5 клеток ──
   if (skill.id === 'lapse_blue') {
-    const actionPatch2: Partial<Character & Enemy> = { hasAction: false };
+    // Проверка ячеек проклятой энергии
+    if (attacker.kind === 'player') {
+      const ch = atk as Character;
+      if (ch.cursedEnergy < skill.energyCost) {
+        return { ...state, log: [...state.log, mkLog(`❌ Недостаточно ячеек (${ch.cursedEnergy}/${skill.energyCost})`, 'info')].slice(-LOG_MAX) };
+      }
+    }
+    const actionPatch2: Partial<Character & Enemy> = {
+      hasAction: false,
+      ...(attacker.kind === 'player' ? { cursedEnergy: Math.max(0, (atk as Character).cursedEnergy - skill.energyCost) } : {}),
+    };
     let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch2 } as typeof u.data }));
     const blueLogs: BattleLog[] = [];
     const blueAnims: AnimEvent[] = [mkAnim('attack', attackerId, 300, { toX: tgt.gridX, toY: tgt.gridY, skillName: 'Lapse Blue' })];
@@ -456,13 +501,24 @@ export const executeReversalRed = (state: BattleState, attackerId: string, targe
   ).find(s => s.id === 'reversal_red');
   if (!skill) return state;
 
+  // Проверка ячеек
+  if (attacker.kind === 'player') {
+    const ch = atk as Character;
+    if (ch.cursedEnergy < skill.energyCost) {
+      return { ...state, log: [...state.log, mkLog(`❌ Недостаточно ячеек (${ch.cursedEnergy}/${skill.energyCost})`, 'info')].slice(-LOG_MAX) };
+    }
+  }
+
   // Range check до центра взрыва
   const distFt = euclideanDist(atk.gridX, atk.gridY, targetX, targetY) * CELL_FT;
   if (distFt > skill.range) {
     return { ...state, log: [...state.log, mkLog(`❌ Reversal Red: точка вне досягаемости (${Math.round(distFt)}/${skill.range} фут.)`, 'info')].slice(-LOG_MAX) };
   }
 
-  let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, hasAction: false } as typeof u.data }));
+  const energyPatch = attacker.kind === 'player'
+    ? { cursedEnergy: Math.max(0, (atk as Character).cursedEnergy - skill.energyCost) }
+    : {};
+  let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, hasAction: false, ...energyPatch } as typeof u.data }));
   const logs: BattleLog[] = [mkLog(`🔴 Reversal Red! Взрыв в (${targetX},${targetY}) радиус 2 кл.`, 'special')];
   const anims: AnimEvent[] = [mkAnim('attack', attackerId, 300, { toX: targetX, toY: targetY, skillName: 'Reversal Red' })];
 
@@ -642,16 +698,22 @@ export const doCallCola = (state: BattleState, unitId: string): BattleState => {
   return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 
-/** Catch breath: action + bonus + movement, CON save DC14.
- *  Требует наличия хотя бы 1 ячейки (cursedEnergy > 0).
+/** Catch breath: действие, Спасбросок ТЕЛ СЛ14.
+ *  Для Юджи: восстанавливает 1-2 HP.
+ *  Для Годжо: восстанавливает 1-2 ячейки проклятой энергии (не HP).
+ *  Юджи не может использовать (нет ячеек).
  */
 export const doCatchBreath = (state: BattleState, unitId: string): BattleState => {
   const unit = getUnitById(state, unitId);
-  if (!unit || !unit.data.hasAction || !unit.data.hasBonusAction) return state;
-  // Юджи (cursedEnergy = 0) не может использовать отдышку
+  if (!unit || !unit.data.hasAction) return state;
   const charData = unit.kind === 'player' ? unit.data : null;
+  // Юджи (maxCursedEnergy = 0) не может использовать отдышку
   if (charData && charData.maxCursedEnergy === 0) {
     return { ...state, log: [...state.log, mkLog(`❌ ${charData.name} не имеет ячеек — отдышка недоступна!`, 'info')].slice(-LOG_MAX) };
+  }
+  // Годжо: полные ячейки — нет смысла
+  if (charData && charData.cursedEnergy >= charData.maxCursedEnergy) {
+    return { ...state, log: [...state.log, mkLog(`❌ Ячейки уже полны (${charData.cursedEnergy}/${charData.maxCursedEnergy})`, 'info')].slice(-LOG_MAX) };
   }
 
   const score = unit.data.abilityScores.con;
@@ -659,24 +721,26 @@ export const doCatchBreath = (state: BattleState, unitId: string): BattleState =
   const total = roll + getModifier(score);
   const success = roll === 20 || (roll !== 1 && total >= 14);
   const perfect = roll === 20;
-  const logs: BattleLog[] = [mkLog(`💨 Отдышка! Спасбросок Телосложения [${roll}]+${getModifier(score)}=${total} vs СЛ14 — ${success ? 'УСПЕХ' : 'ПРОВАЛ'}`, 'save',
+  const logs: BattleLog[] = [mkLog(`💨 Отдышка! Спасбросок ТЕЛ [${roll}]+${getModifier(score)}=${total} vs СЛ14 — ${success ? 'УСПЕХ' : 'ПРОВАЛ'}`, 'save',
     { rolls: [roll], total, mod: getModifier(score), die: 'd20' })];
 
-  let heal = 0;
+  let restored = 0;
   if (success) {
-    heal = perfect ? 2 : 1;
-    logs.push(mkLog(`✅ Восстановлено ${heal} HP`, 'heal'));
-  } else {
-    logs.push(mkLog('❌ Не удалось отдышаться', 'miss'));
+    restored = perfect ? 2 : 1;
   }
 
-  const newState = updateUnit(state, unitId, u => ({
-    ...u, data: {
-      ...u.data,
-      hasAction: false, hasBonusAction: false, movementLeft: 0,
-      hp: Math.min(u.data.maxHp, u.data.hp + heal),
-    } as typeof u.data
-  }));
+  const newState = updateUnit(state, unitId, u => {
+    if (u.kind !== 'player') return u;
+    const ch = u.data as Character;
+    if (restored > 0) {
+      const newCE = Math.min(ch.maxCursedEnergy, ch.cursedEnergy + restored);
+      logs.push(mkLog(`✅ Восстановлено ${newCE - ch.cursedEnergy} ячеек (${newCE}/${ch.maxCursedEnergy})`, 'heal'));
+      return { ...u, data: { ...ch, hasAction: false, cursedEnergy: newCE } as typeof u.data };
+    } else {
+      logs.push(mkLog('❌ Не удалось отдышаться', 'miss'));
+      return { ...u, data: { ...ch, hasAction: false } as typeof u.data };
+    }
+  });
   return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 

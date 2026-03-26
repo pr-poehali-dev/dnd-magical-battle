@@ -1,17 +1,25 @@
 import React, { useState, useCallback } from 'react';
-import { Character, BattleState, Enemy, Item } from '@/game/types';
+import { Character, BattleState, Enemy } from '@/game/types';
 import { CHARACTERS, applyLevelUp } from '@/game/characters';
-import { initBattle } from '@/game/battleEngine';
+import { initBattle, initLocalPvP } from '@/game/battleEngine';
 import { getEnemyById } from '@/game/enemies';
-import { ITEMS } from '@/game/worldData';
 
 import MainMenu from '@/components/game/MainMenu';
 import CharacterSelect from '@/components/game/CharacterSelect';
 import BattleScreen from '@/components/game/BattleScreen';
 
-type Screen = 'mainMenu' | 'characterSelect' | 'battle' | 'pvpSelect' | 'pvpBattle' | 'victory' | 'defeat';
+type Screen =
+  | 'mainMenu'
+  | 'characterSelect'
+  | 'battle'
+  | 'pvpSelect'       // старый PvP vs бот
+  | 'pvpBattle'
+  | 'localPvpP1'      // локальный PvP — выбор 1-го игрока
+  | 'localPvpP2'      // локальный PvP — выбор 2-го игрока
+  | 'localPvpBattle'
+  | 'victory'
+  | 'defeat';
 
-/** Convert a Character into an Enemy-shaped unit for the AI side of PvP */
 function charAsEnemy(char: Character, slot: number): Enemy {
   return {
     id: char.id + '_bot',
@@ -37,9 +45,7 @@ function charAsEnemy(char: Character, slot: number): Enemy {
     onTree: false,
     gridX: 13,
     gridY: 3 + slot * 2,
-    attack: char.abilityScores.str,
     challengeRating: char.level,
-    // Use the character's unlocked skills as the enemy skill pool
     skills: char.unlockedSkills,
     exp: 100,
     loot: [],
@@ -53,7 +59,8 @@ export default function Index() {
   const [screen, setScreen] = useState<Screen>('mainMenu');
   const [selectedChar, setSelectedChar] = useState<Character | null>(null);
   const [battleState, setBattleState] = useState<BattleState | null>(null);
-  const [pvpP1, setPvpP1] = useState<Character | null>(null);
+  const [localP1, setLocalP1] = useState<Character | null>(null);
+  const [winnerName, setWinnerName] = useState<string>('');
 
   // ── Story mode ──
   const handleSelectCharacter = (char: Character) => {
@@ -71,40 +78,47 @@ export default function Index() {
     let updatedChar = { ...selectedChar, exp: selectedChar.exp + expGained };
     if (updatedChar.exp >= updatedChar.expToNext) updatedChar = applyLevelUp(updatedChar);
     setSelectedChar(updatedChar);
+    setWinnerName('');
     setScreen('victory');
   }, [selectedChar]);
 
   const handleDefeat = useCallback(() => {
+    setWinnerName('');
     setScreen('defeat');
   }, []);
 
-  // ── PvP mode (player picks 1 char, bot picks randomly from remaining) ──
-  const handlePvpStart = () => {
-    setPvpP1(null);
-    setScreen('pvpSelect');
-  };
-
+  // ── PvP vs бот ──
   const handlePvpSelectP1 = (char: Character) => {
     const p1 = { ...char, gridX: 2, gridY: 5 };
-    setPvpP1(p1);
-
-    // Bot picks a random character (excluding chosen one)
     const botOptions = CHARACTERS.filter(c => c.id !== char.id);
     const botChar = botOptions[Math.floor(Math.random() * botOptions.length)];
     const botEnemy = charAsEnemy(botChar, 0);
-
     const state = initBattle([p1], [botEnemy]);
     setBattleState(state);
     setScreen('pvpBattle');
   };
 
-  const handlePvpVictory = useCallback((state: BattleState) => {
+  // ── Локальный PvP ──
+  const handleLocalPvpP1 = (char: Character) => {
+    setLocalP1({ ...char });
+    setScreen('localPvpP2');
+  };
+
+  const handleLocalPvpP2 = (char: Character) => {
+    if (!localP1) return;
+    const state = initLocalPvP({ ...localP1 }, { ...char });
+    setBattleState(state);
+    setScreen('localPvpBattle');
+  };
+
+  const handleLocalPvpEnd = useCallback((state: BattleState) => {
+    // Определяем победителя по выжившей команде
+    const winner = state.units.find(u => !u.data.isUnconscious && !u.data.isDead);
+    setWinnerName(winner ? winner.data.name : '');
     setScreen('victory');
   }, []);
 
-  const handlePvpDefeat = useCallback(() => {
-    setScreen('defeat');
-  }, []);
+  const isLocalPvp = screen === 'localPvpBattle';
 
   return (
     <div className="min-h-screen" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
@@ -112,7 +126,8 @@ export default function Index() {
         <MainMenu
           onNewGame={() => setScreen('characterSelect')}
           onContinue={() => setScreen('characterSelect')}
-          onPvP={handlePvpStart}
+          onPvP={() => setScreen('pvpSelect')}
+          onLocalPvP={() => setScreen('localPvpP1')}
           hasSave={false}
         />
       )}
@@ -125,37 +140,55 @@ export default function Index() {
         />
       )}
 
-      {/* PvP — player picks their char, bot chosen automatically */}
       {screen === 'pvpSelect' && (
         <CharacterSelect
           onSelect={handlePvpSelectP1}
           onBack={() => setScreen('mainMenu')}
-          title="PvP — Выбери чародея"
+          title="PvP vs Бот — Выбери чародея"
           subtitle="Противника выберет бот"
         />
       )}
 
-      {(screen === 'battle' || screen === 'pvpBattle') && battleState && (
+      {screen === 'localPvpP1' && (
+        <CharacterSelect
+          onSelect={handleLocalPvpP1}
+          onBack={() => setScreen('mainMenu')}
+          title="Игрок 1 — Выбери чародея"
+          subtitle="Локальный мультиплеер"
+        />
+      )}
+
+      {screen === 'localPvpP2' && (
+        <CharacterSelect
+          onSelect={handleLocalPvpP2}
+          onBack={() => setScreen('localPvpP1')}
+          title="Игрок 2 — Выбери чародея"
+          subtitle={`Против: ${localP1?.name}`}
+          excludeId={localP1?.id}
+        />
+      )}
+
+      {(screen === 'battle' || screen === 'pvpBattle' || screen === 'localPvpBattle') && battleState && (
         <BattleScreen
           battleState={battleState}
           onBattleUpdate={setBattleState}
-          onVictory={screen === 'pvpBattle' ? handlePvpVictory : handleVictory}
-          onDefeat={screen === 'pvpBattle' ? handlePvpDefeat : handleDefeat}
+          onVictory={isLocalPvp ? handleLocalPvpEnd : handleVictory}
+          onDefeat={handleDefeat}
+          isLocalPvp={isLocalPvp}
         />
       )}
 
       {screen === 'victory' && (
         <div className="min-h-screen bg-[#050510] flex flex-col items-center justify-center gap-6">
           <div className="text-6xl">🏆</div>
+          {winnerName && (
+            <div className="text-cyan-400 text-xl font-mono tracking-widest">{winnerName}</div>
+          )}
           <h1 className="text-5xl font-black text-white tracking-widest" style={{ textShadow: '0 0 30px #ffd700' }}>ПОБЕДА!</h1>
           <div className="flex gap-4 mt-4">
-            <button onClick={() => setScreen('characterSelect')}
-              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-purple-700 border border-purple-500 hover:bg-purple-600">
-              ▶ Ещё раз
-            </button>
             <button onClick={() => setScreen('mainMenu')}
-              className="px-8 py-3 rounded-xl font-bold text-gray-400 border border-white/20 hover:bg-white/5">
-              Меню
+              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-purple-700 border border-purple-500 hover:bg-purple-600">
+              В меню
             </button>
           </div>
         </div>
@@ -166,13 +199,9 @@ export default function Index() {
           <div className="text-6xl grayscale opacity-60">💀</div>
           <h1 className="text-5xl font-black text-red-500 tracking-widest" style={{ textShadow: '0 0 30px #ef4444' }}>ПОРАЖЕНИЕ</h1>
           <div className="flex gap-4 mt-4">
-            <button onClick={() => setScreen('characterSelect')}
-              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-red-900 border border-red-600 hover:bg-red-800">
-              🔄 Снова
-            </button>
             <button onClick={() => setScreen('mainMenu')}
-              className="px-8 py-3 rounded-xl font-bold text-gray-400 border border-white/20 hover:bg-white/5">
-              Меню
+              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-red-900 border border-red-600 hover:bg-red-800">
+              В меню
             </button>
           </div>
         </div>

@@ -8,6 +8,7 @@ interface Props {
   onBack: () => void;
   title?: string;
   subtitle?: string;
+  excludeId?: string;
 }
 
 const STAT_BAR = ({ value, max, color }: { value: number; max: number; color: string }) => (
@@ -21,8 +22,9 @@ const Mod = ({ score }: { score: number }) => {
   return <span className={m >= 0 ? 'text-green-400' : 'text-red-400'}>{m >= 0 ? '+' : ''}{m}</span>;
 };
 
-export default function CharacterSelect({ onSelect, onBack, title = 'Выбор чародея', subtitle }: Props) {
-  const [selected, setSelected] = useState<Character>(CHARACTERS[0]);
+export default function CharacterSelect({ onSelect, onBack, title = 'Выбор чародея', subtitle, excludeId }: Props) {
+  const availableChars = CHARACTERS.filter(c => c.id !== excludeId);
+  const [selected, setSelected] = useState<Character>(availableChars[0] ?? CHARACTERS[0]);
   const [tab, setTab] = useState<'stats' | 'skills' | 'lore'>('stats');
 
   return (
@@ -39,7 +41,7 @@ export default function CharacterSelect({ onSelect, onBack, title = 'Выбор 
       <div className="flex flex-1 overflow-hidden">
         {/* List */}
         <div className="w-52 border-r border-purple-900/20 overflow-y-auto p-2 flex flex-col gap-1">
-          {CHARACTERS.map(c => (
+          {availableChars.map(c => (
             <button key={c.id} onClick={() => setSelected(c)}
               className="flex items-center gap-2 px-2 py-2 rounded-xl border text-left transition-all"
               style={{

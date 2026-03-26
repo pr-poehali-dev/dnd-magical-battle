@@ -4,6 +4,7 @@ interface MainMenuProps {
   onNewGame: () => void;
   onContinue: () => void;
   onPvP?: () => void;
+  onLocalPvP?: () => void;
   hasSave: boolean;
 }
 
@@ -16,7 +17,7 @@ const PARTICLES = Array.from({ length: 20 }, (_, i) => ({
   delay: Math.random() * 3,
 }));
 
-export default function MainMenu({ onNewGame, onContinue, onPvP, hasSave }: MainMenuProps) {
+export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, hasSave }: MainMenuProps) {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
@@ -115,13 +116,23 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, hasSave }: Main
             </button>
           )}
 
+          {onLocalPvP && (
+            <button
+              onClick={onLocalPvP}
+              className="group py-4 px-8 bg-gradient-to-r from-cyan-900 to-blue-900 border border-cyan-500 rounded-xl font-title font-bold text-cyan-300 text-lg tracking-widest hover:from-cyan-700 hover:to-blue-700 transition-all duration-300"
+              style={{ boxShadow: '0 0 20px #06b6d440' }}
+            >
+              👥 Мультиплеер (2 игрока)
+            </button>
+          )}
+
           {onPvP && (
             <button
               onClick={onPvP}
               className="group py-4 px-8 bg-gradient-to-r from-red-900 to-orange-900 border border-red-500 rounded-xl font-title font-bold text-red-300 text-lg tracking-widest hover:from-red-700 hover:to-orange-700 transition-all duration-300"
               style={{ boxShadow: '0 0 20px #ef444440' }}
             >
-              ⚔ PvP — Чародей vs Чародей
+              🤖 PvP — vs Бот
             </button>
           )}
 
