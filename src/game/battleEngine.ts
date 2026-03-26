@@ -1,569 +1,598 @@
 import {
-  BattleState, Character, Enemy, Skill, BattleLog,
-  GridCell, TurnActions, GRID_COLS, GRID_ROWS, BASE_SPEED_FT, StatusEffect
+  BattleState, BattleUnit, BattleLog, Character, Enemy, Skill,
+  GridCell, StatusEffect, AnimEvent, GRID_COLS, GRID_ROWS, CELL_FT
 } from './types';
 import {
-  rollDie, rollDice, getModifier, attackRoll, savingThrow,
-  getReachableCells, getAttackRangeCells, distanceFeet
+  attackRoll20, savingThrow20, rollDice, rollDoubled, rollDie, rollDieN,
+  getModifier, getReachable, getTargetable, distFeet, chebyshevDist,
+  generateForestGrid
 } from './dndUtils';
 
-let logId = 0;
-const log = (text: string, type: BattleLog['type'], diceResult?: BattleLog['diceResult']): BattleLog => ({
-  id: String(logId++), text, type, diceResult
-});
+let _logId = 0;
+let _animId = 0;
+const mkLog = (text: string, type: BattleLog['type'], dice?: BattleLog['diceResult']): BattleLog =>
+  ({ id: String(_logId++), text, type, diceResult: dice });
+const mkAnim = (type: AnimEvent['type'], unitId: string, dur: number, extra: Partial<AnimEvent> = {}): AnimEvent =>
+  ({ id: String(_animId++), type, unitId, duration: dur, startTime: Date.now(), ...extra });
 
-// ─── GRID GENERATION ───────────────────────────────────────────────────────
-export const generateGrid = (biome: string): GridCell[][] => {
-  const grid: GridCell[][] = [];
-  for (let y = 0; y < GRID_ROWS; y++) {
-    const row: GridCell[] = [];
-    for (let x = 0; x < GRID_COLS; x++) {
-      let terrain: GridCell['terrain'] = 'open';
-      let decoration: string | undefined;
+// ─── INIT ──────────────────────────────────────────────────────────────────
+export const initBattle = (
+  playerChars: Character[],
+  enemies: Enemy[],
+): BattleState => {
+  // Roll initiative for all
+  const allUnits: BattleUnit[] = [
+    ...playerChars.map((c, i): BattleUnit => ({
+      kind: 'player', data: { ...c, gridX: 1 + i, gridY: 4 + (i % 3), statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: c.speed },
+      teamId: 0, turnIndex: rollDieN(20) + getModifier(c.abilityScores.dex),
+    })),
+    ...enemies.map((e, i): BattleUnit => ({
+      kind: 'enemy', data: { ...e, gridX: GRID_COLS - 2 - (i % 3), gridY: 4 + i, statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: e.speed },
+      teamId: 1, turnIndex: rollDieN(20) + getModifier(e.abilityScores.dex),
+    })),
+  ].sort((a, b) => b.turnIndex - a.turnIndex);
 
-      const r = Math.random();
+  const grid = generateForestGrid();
 
-      if (biome === 'forest') {
-        if (r < 0.12) { terrain = 'blocked'; decoration = '🌲'; }
-        else if (r < 0.22) { terrain = 'difficult'; decoration = '🌿'; }
-        else if (r < 0.26) decoration = '🍄';
-      } else if (biome === 'urban') {
-        if (r < 0.08) { terrain = 'blocked'; decoration = '🏢'; }
-        else if (r < 0.15) { terrain = 'blocked'; decoration = '🚗'; }
-        else if (r < 0.20) decoration = '💡';
-      } else if (biome === 'dungeon') {
-        if (r < 0.15) { terrain = 'blocked'; decoration = '🪨'; }
-        else if (r < 0.22) { terrain = 'difficult'; decoration = '⛓️'; }
-        else if (r < 0.25) { terrain = 'hazard'; decoration = '🕳️'; }
-      } else if (biome === 'ocean') {
-        if (r < 0.10) { terrain = 'difficult'; decoration = '🌊'; }
-        else if (r < 0.15) decoration = '⚓';
-      } else if (biome === 'void') {
-        if (r < 0.10) { terrain = 'hazard'; decoration = '💀'; }
-        else if (r < 0.18) { terrain = 'difficult'; decoration = '🌀'; }
-      } else if (biome === 'palace') {
-        if (r < 0.08) { terrain = 'blocked'; decoration = '🏛️'; }
-        else if (r < 0.14) decoration = '🕯️';
-      } else if (biome === 'prison') {
-        if (r < 0.12) { terrain = 'blocked'; decoration = '🔒'; }
-        else if (r < 0.18) { terrain = 'difficult'; decoration = '⛓️'; }
-      }
-
-      row.push({ x, y, terrain, decoration });
-    }
-    grid.push(row);
-  }
-  // Clear starting positions
-  grid[3][2] = { x: 2, y: 3, terrain: 'open' };
-  grid[3][3] = { x: 3, y: 3, terrain: 'open' };
-  grid[4][9] = { x: 9, y: 4, terrain: 'open' };
-  grid[4][8] = { x: 8, y: 4, terrain: 'open' };
-  return grid;
-};
-
-const freshTurnActions = (speedFt: number): TurnActions => ({
-  hasAction: true,
-  hasBonusAction: true,
-  hasReaction: true,
-  movementLeft: speedFt,
-});
-
-// ─── INITIATIVE ────────────────────────────────────────────────────────────
-export const rollInitiative = (
-  player: Character,
-  enemy: Enemy
-): BattleState['initiative'] => {
-  const playerRoll = rollDie(20) + getModifier(player.abilityScores.dex) + player.initiative;
-  const enemyRoll = rollDie(20) + getModifier(enemy.abilityScores.dex);
-  // Player class head_of_hei always wins
-  const playerFirst = player.class === 'head_of_hei' || playerRoll >= enemyRoll;
   return {
-    order: playerFirst ? ['player', 'enemy'] : ['enemy', 'player'],
-    currentIndex: 0,
-  };
-};
-
-// ─── BATTLE INIT ───────────────────────────────────────────────────────────
-export const initBattle = (player: Character, enemy: Enemy, biome = 'urban'): BattleState => {
-  const initiative = rollInitiative(player, enemy);
-  const grid = generateGrid(biome);
-  const first = initiative.order[0];
-  return {
-    player: { ...player, gridX: 2, gridY: 3 },
-    enemy: { ...enemy, gridX: 9, gridY: 4 },
-    initiative,
-    turn: first,
+    units: allUnits,
+    currentUnitIndex: 0,
     round: 1,
-    log: [
-      log(`⚔ Инициатива! ${first === 'player' ? player.name : enemy.name} ходит первым!`, 'system'),
-    ],
-    phase: first === 'player' ? 'player_turn' : 'enemy_turn',
-    playerActions: freshTurnActions(player.speed),
-    enemyActions: freshTurnActions(enemy.speed),
     grid,
-    playerStatusEffects: [],
-    enemyStatusEffects: [],
+    log: [mkLog('⚔ Бой начался! Ходит: ' + allUnits[0].data.name, 'system')],
+    animQueue: [],
+    phase: 'active',
+    selectedUnitId: null,
     selectedSkill: null,
     movementMode: false,
+    reachableCells: [],
+    targetableCells: [],
+    disengage: new Set(),
+    winTeam: undefined,
   };
 };
 
-// ─── MOVEMENT ──────────────────────────────────────────────────────────────
-export const movePlayer = (state: BattleState, toX: number, toY: number): BattleState => {
-  if (state.turn !== 'player' || state.playerActions.movementLeft <= 0) return state;
-  const cell = state.grid[toY]?.[toX];
-  if (!cell || cell.terrain === 'blocked') return state;
-  if (toX === state.enemy.gridX && toY === state.enemy.gridY) return state;
+// ─── HELPERS ───────────────────────────────────────────────────────────────
+export const getCurrentUnit = (state: BattleState): BattleUnit =>
+  state.units[state.currentUnitIndex % state.units.length];
 
-  const dist = distanceFeet(state.player.gridX, state.player.gridY, toX, toY);
-  const cost = cell.terrain === 'difficult' ? dist * 2 : dist;
+const getUnitById = (state: BattleState, id: string) =>
+  state.units.find(u => u.data.id === id);
 
-  if (cost > state.playerActions.movementLeft) return state;
-
-  const logs: BattleLog[] = [];
-  if (cell.terrain === 'hazard') {
-    const dmg = rollDie(4);
-    logs.push(log(`${state.player.name} ступает в опасную зону! ${dmg} урона.`, 'system'));
-    return {
-      ...state,
-      player: { ...state.player, gridX: toX, gridY: toY, hp: Math.max(0, state.player.hp - dmg) },
-      playerActions: { ...state.playerActions, movementLeft: state.playerActions.movementLeft - cost },
-      movementMode: false,
-      log: [...state.log, ...logs].slice(-25),
-    };
-  }
-
-  return {
-    ...state,
-    player: { ...state.player, gridX: toX, gridY: toY },
-    playerActions: { ...state.playerActions, movementLeft: state.playerActions.movementLeft - cost },
-    movementMode: false,
-    log: [...state.log,
-      log(`${state.player.name} перемещается (осталось ${state.playerActions.movementLeft - cost} фут.)`, 'system')
-    ].slice(-25),
-  };
-};
-
-// ─── SKILL EXECUTION ───────────────────────────────────────────────────────
-export const executeSkill = (state: BattleState, skill: Skill): BattleState => {
-  if (state.turn !== 'player') return state;
-  if (skill.currentCooldown > 0) return state;
-  if (state.player.cursedEnergy < skill.energyCost) return state;
-
-  // Check action availability
-  if (skill.actionCost === 'action' && !state.playerActions.hasAction) return state;
-  if (skill.actionCost === 'bonus_action' && !state.playerActions.hasBonusAction) return state;
-  if (skill.actionCost === 'reaction' && !state.playerActions.hasReaction) return state;
-
-  // Check range
-  const distToEnemy = distanceFeet(
-    state.player.gridX, state.player.gridY,
-    state.enemy.gridX, state.enemy.gridY
-  );
-  if (distToEnemy > skill.range + 5) {
-    return {
-      ...state,
-      log: [...state.log,
-        log(`❌ ${skill.name}: враг слишком далеко! (${distToEnemy} фут., нужно ≤${skill.range} фут.)`, 'system')
-      ].slice(-25),
-    };
-  }
-
-  const logs: BattleLog[] = [];
-  const newPlayer = {
-    ...state.player,
-    cursedEnergy: state.player.cursedEnergy - skill.energyCost,
-    unlockedSkills: state.player.unlockedSkills.map(s =>
-      s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s
-    ),
-  };
-
-  // Consume action
-  const newPlayerActions: TurnActions = {
-    ...state.playerActions,
-    hasAction: skill.actionCost === 'action' ? false : state.playerActions.hasAction,
-    hasBonusAction: skill.actionCost === 'bonus_action' ? false : state.playerActions.hasBonusAction,
-    hasReaction: skill.actionCost === 'reaction' ? false : state.playerActions.hasReaction,
-  };
-
-  if (skill.isHeal) {
-    // Healing skill
-    const healRoll = rollDice(skill.damageDice);
-    const healed = Math.min(newPlayer.maxHp - newPlayer.hp, healRoll.total);
-    newPlayer.hp = Math.min(newPlayer.maxHp, newPlayer.hp + healRoll.total);
-    newPlayer.tempHp = skill.id === 'blood_armor'
-      ? rollDie(10) * 2 + getModifier(newPlayer.abilityScores.con)
-      : newPlayer.tempHp;
-
-    logs.push(log(
-      `💚 ${newPlayer.name} использует «${skill.name}» — восстанавливает ${healRoll.total} HP`,
-      'player', { rolls: healRoll.rolls, total: healRoll.total, die: skill.damageDice.die }
-    ));
-
-    if (skill.statusEffect) {
-      logs.push(log(`✨ Эффект «${skill.statusEffect.type}» применён!`, 'system'));
-    }
-
-    return {
-      ...state, player: newPlayer, playerActions: newPlayerActions,
-      playerStatusEffects: skill.statusEffect
-        ? [...state.playerStatusEffects, skill.statusEffect]
-        : state.playerStatusEffects,
-      log: [...state.log, ...logs].slice(-25),
-    };
-  }
-
-  // Attack Roll: d20 + DEX or STR mod + proficiency
-  const abilityMod = skill.element === 'physical' || skill.element === 'blood'
-    ? getModifier(newPlayer.abilityScores.str)
-    : getModifier(newPlayer.abilityScores.int);
-  const atk = attackRoll(abilityMod, newPlayer.proficiencyBonus, state.enemy.armorClass);
-
-  logs.push(log(
-    `🎲 ${newPlayer.name} бросает d20 [${atk.roll}] + ${abilityMod + newPlayer.proficiencyBonus} = ${atk.total} vs КБ ${state.enemy.armorClass}`,
-    'player', { rolls: [atk.roll], total: atk.total, die: 'd20' }
-  ));
-
-  if (!atk.hit) {
-    logs.push(log(`💨 «${skill.name}» — ПРОМАХ!`, 'miss'));
-    return {
-      ...state, player: newPlayer, playerActions: newPlayerActions,
-      log: [...state.log, ...logs].slice(-25),
-      attackRollResult: atk,
-    };
-  }
-
-  // Damage roll
-  const dmgRoll = rollDice(skill.damageDice);
-  let totalDmg = dmgRoll.total;
-  if (atk.crit) totalDmg += rollDice(skill.damageDice).total; // crit = double dice
-
-  // Apply status buffs
-  const empowered = state.playerStatusEffects.find(e => e.type === 'empowered');
-  if (empowered) totalDmg += empowered.value;
-
-  // Passive bonus: Vessel (Sukuna) on round multiples
-  if (state.player.class === 'vessel' && state.round % 3 === 0) {
-    const bonus = rollDie(10) + 5;
-    totalDmg += bonus;
-    logs.push(log(`👹 Сукуна берёт контроль! +${bonus} урона`, 'combo'));
-  }
-
-  // Apply to enemy (accounting for tempHP)
-  let enemyTempHp = state.enemy.tempHp;
-  let actualDmg = totalDmg;
-  if (enemyTempHp > 0) {
-    const absorbed = Math.min(enemyTempHp, actualDmg);
-    enemyTempHp -= absorbed;
-    actualDmg -= absorbed;
-    if (absorbed > 0) logs.push(log(`🛡 Временный HP поглотил ${absorbed} урона`, 'system'));
-  }
-
-  const newEnemyHp = Math.max(0, state.enemy.hp - actualDmg);
-
-  logs.push(log(
-    `${atk.crit ? '💥 КРИТ! ' : ''}«${skill.name}» попадает! Урон: ${actualDmg}${atk.crit ? ' (критический)' : ''}`,
-    atk.crit ? 'critical' : 'player',
-    { rolls: dmgRoll.rolls, total: totalDmg, die: skill.damageDice.die }
-  ));
-
-  // Saving throw
-  let enemyStatusEffects = [...state.enemyStatusEffects];
-  if (skill.savingThrow && skill.statusEffect) {
-    const save = savingThrow(state.enemy.abilityScores[skill.savingThrow.stat], skill.savingThrow.dc);
-    logs.push(log(
-      `🎲 Спасбросок ${skill.savingThrow.stat.toUpperCase()} [${save.roll}] = ${save.total} vs СЛ ${skill.savingThrow.dc} — ${save.success ? 'УСПЕХ' : 'ПРОВАЛ'}`,
-      'save', { rolls: [save.roll], total: save.total, die: 'd20' }
-    ));
-    if (!save.success) {
-      enemyStatusEffects = [...enemyStatusEffects, { ...skill.statusEffect }];
-      logs.push(log(`🌀 Эффект «${skill.statusEffect.type}» применён к ${state.enemy.name}`, 'system'));
-    }
-  } else if (skill.statusEffect && !skill.savingThrow) {
-    enemyStatusEffects = [...enemyStatusEffects, { ...skill.statusEffect }];
-  }
-
-  return {
-    ...state,
-    player: newPlayer,
-    enemy: { ...state.enemy, hp: newEnemyHp, tempHp: enemyTempHp },
-    playerActions: newPlayerActions,
-    enemyStatusEffects,
-    log: [...state.log, ...logs].slice(-25),
-    attackRollResult: atk,
-  };
-};
-
-// ─── END PLAYER TURN ───────────────────────────────────────────────────────
-export const endPlayerTurn = (state: BattleState): BattleState => {
-  const logs: BattleLog[] = [log('─── Ход врага ───', 'system')];
-
-  // Tick player status effects
-  const newPlayerFX = state.playerStatusEffects
-    .map(e => ({ ...e, duration: e.duration - 1 }))
-    .filter(e => e.duration > 0);
-
-  return {
-    ...state,
-    turn: 'enemy',
-    phase: 'enemy_turn',
-    playerStatusEffects: newPlayerFX,
-    playerActions: freshTurnActions(state.player.speed),
-    // Tick skill cooldowns
-    player: {
-      ...state.player,
-      unlockedSkills: state.player.unlockedSkills.map(s =>
-        ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) })
-      ),
-    },
-    log: [...state.log, ...logs].slice(-25),
-  };
-};
-
-// ─── ENEMY AI TURN ─────────────────────────────────────────────────────────
-export const enemyTurn = (state: BattleState): BattleState => {
-  if (state.turn !== 'enemy') return state;
-
-  const logs: BattleLog[] = [];
-  let newState = { ...state };
-
-  // Check stun
-  const stunned = state.enemyStatusEffects.some(e => e.type === 'stun' || e.type === 'grappled');
-  if (stunned) {
-    logs.push(log(`${state.enemy.name} скован и пропускает ход!`, 'system'));
-    const newEnemyFX = state.enemyStatusEffects
-      .map(e => ({ ...e, duration: e.duration - 1 }))
-      .filter(e => e.duration > 0);
-
-    return {
-      ...newState,
-      turn: 'player',
-      phase: 'player_turn',
-      round: state.round + 1,
-      enemyStatusEffects: newEnemyFX,
-      enemyActions: freshTurnActions(state.enemy.speed),
-      log: [...state.log, ...logs].slice(-25),
-    };
-  }
-
-  // Move towards player if not adjacent
-  const dist = distanceFeet(
-    state.enemy.gridX, state.enemy.gridY,
-    state.player.gridX, state.player.gridY
-  );
-
-  let newEnemyX = state.enemy.gridX;
-  let newEnemyY = state.enemy.gridY;
-
-  if (dist > 10) {
-    const dx = state.player.gridX - state.enemy.gridX;
-    const dy = state.player.gridY - state.enemy.gridY;
-    const stepX = newEnemyX + Math.sign(dx);
-    const stepY = newEnemyY + Math.sign(dy);
-
-    // Try to move in X then Y
-    const cellX = state.grid[newEnemyY]?.[stepX];
-    const cellY = state.grid[stepY]?.[newEnemyX];
-
-    if (cellX && cellX.terrain !== 'blocked' && !(stepX === state.player.gridX && newEnemyY === state.player.gridY)) {
-      newEnemyX = stepX;
-    } else if (cellY && cellY.terrain !== 'blocked' && !(newEnemyX === state.player.gridX && stepY === state.player.gridY)) {
-      newEnemyY = stepY;
-    }
-    logs.push(log(`${state.enemy.name} двигается к ${state.player.name}`, 'enemy'));
-  }
-
-  // Pick skill
-  const availSkills = state.enemy.skills.filter(s => s.currentCooldown === 0);
-  const pickedSkill = availSkills.length > 0
-    ? availSkills[Math.floor(Math.random() * availSkills.length)]
-    : state.enemy.skills[0];
-
-  const newDist = distanceFeet(newEnemyX, newEnemyY, state.player.gridX, state.player.gridY);
-
-  if (newDist <= pickedSkill.range + 5) {
-    // Attack
-    const atkMod = getModifier(state.enemy.abilityScores.str);
-    const atk = attackRoll(atkMod, 2, state.player.armorClass);
-
-    logs.push(log(
-      `🎲 ${state.enemy.name} бросает d20 [${atk.roll}] + ${atkMod + 2} = ${atk.total} vs КБ ${state.player.armorClass}`,
-      'enemy', { rolls: [atk.roll], total: atk.total, die: 'd20' }
-    ));
-
-    if (!atk.hit) {
-      logs.push(log(`💨 «${pickedSkill.name}» — ПРОМАХ!`, 'miss'));
-    } else {
-      const dmgRoll = rollDice(pickedSkill.damageDice);
-      let dmg = dmgRoll.total;
-      if (atk.crit) dmg += rollDice(pickedSkill.damageDice).total;
-
-      // Weakened effect reduces damage
-      const weakened = state.playerStatusEffects.find(e => e.type === 'weakened');
-      if (weakened) dmg = Math.max(1, dmg - weakened.value);
-
-      let playerTempHp = state.player.tempHp;
-      let actualDmg = dmg;
-      if (playerTempHp > 0) {
-        const abs = Math.min(playerTempHp, actualDmg);
-        playerTempHp -= abs;
-        actualDmg -= abs;
-        if (abs > 0) logs.push(log(`🛡 TempHP поглотил ${abs} урона`, 'system'));
-      }
-
-      const newHp = Math.max(0, state.player.hp - actualDmg);
-
-      logs.push(log(
-        `${atk.crit ? '💥 КРИТ! ' : ''}«${pickedSkill.name}» попадает в ${state.player.name}! Урон: ${actualDmg}`,
-        atk.crit ? 'critical' : 'enemy',
-        { rolls: dmgRoll.rolls, total: dmg, die: pickedSkill.damageDice.die }
-      ));
-
-      newState = {
-        ...newState,
-        player: { ...newState.player, hp: newHp, tempHp: playerTempHp },
-      };
-    }
-
-    // Tick skill cooldown
-    newState = {
-      ...newState,
-      enemy: {
-        ...newState.enemy,
-        gridX: newEnemyX, gridY: newEnemyY,
-        skills: newState.enemy.skills.map(s =>
-          s.id === pickedSkill.id ? { ...s, currentCooldown: s.cooldownRounds } : { ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) }
-        ),
-      },
-    };
-  } else {
-    newState = { ...newState, enemy: { ...newState.enemy, gridX: newEnemyX, gridY: newEnemyY } };
-    logs.push(log(`${state.enemy.name} не может достать ${state.player.name}`, 'enemy'));
-  }
-
-  // Tick enemy status effects
-  const newEnemyFX = state.enemyStatusEffects
-    .map(e => ({ ...e, duration: e.duration - 1 }))
-    .filter(e => e.duration > 0);
-
-  // Bleed / burn / curse DoT
-  let enemyBleedDmg = 0;
-  state.enemyStatusEffects.forEach(e => {
-    if ((e.type === 'bleed' || e.type === 'burn' || e.type === 'curse') && e.value > 0) {
-      enemyBleedDmg += e.value;
-    }
-  });
-  if (enemyBleedDmg > 0) {
-    newState = { ...newState, enemy: { ...newState.enemy, hp: Math.max(0, newState.enemy.hp - enemyBleedDmg) } };
-    logs.push(log(`🩸 ${state.enemy.name} получает ${enemyBleedDmg} урона от статус-эффектов`, 'system'));
-  }
-
-  return {
-    ...newState,
-    turn: 'player',
-    phase: 'player_turn',
-    round: state.round + 1,
-    enemyStatusEffects: newEnemyFX,
-    enemyActions: freshTurnActions(state.enemy.speed),
-    playerActions: freshTurnActions(state.player.speed),
-    log: [...state.log, ...logs].slice(-25),
-  };
-};
-
-// ─── DEATH SAVES ───────────────────────────────────────────────────────────
-export const makeDeathSave = (state: BattleState): { state: BattleState; result: 'stable' | 'dead' | 'continue' } => {
-  const roll = rollDie(20);
-  const logs: BattleLog[] = [
-    log(`💀 СПАСБРОСОК ОТ СМЕРТИ: [${roll}]`, 'system', { rolls: [roll], total: roll, die: 'd20' })
-  ];
-
-  let { successes, failures } = state.player.deathSaves;
-
-  if (roll === 20) {
-    logs.push(log('🌟 Натуральная 20 — немедленная стабилизация с 1 HP!', 'critical'));
-    const newState = {
-      ...state,
-      player: { ...state.player, hp: 1, deathSaves: { successes: 0, failures: 0 } },
-      log: [...state.log, ...logs].slice(-25),
-    };
-    return { state: newState, result: 'stable' };
-  }
-
-  if (roll === 1) {
-    failures += 2; // nat 1 = 2 failures
-    logs.push(log('💀 Натуральная 1 — два провала!', 'enemy'));
-  } else if (roll >= 10) {
-    successes += 1;
-    logs.push(log(`✅ Успех [${roll}] — ${successes}/3`, 'player'));
-  } else {
-    failures += 1;
-    logs.push(log(`❌ Провал [${roll}] — ${failures}/3`, 'enemy'));
-  }
-
-  const newDeathSaves = { successes, failures };
-
-  if (successes >= 3) {
-    logs.push(log(`${state.player.name} стабилизируется!`, 'system'));
-    const ns = { ...state, player: { ...state.player, hp: 0, deathSaves: { successes: 0, failures: 0 } }, log: [...state.log, ...logs].slice(-25) };
-    return { state: ns, result: 'stable' };
-  }
-  if (failures >= 3) {
-    logs.push(log(`💀 ${state.player.name} мёртв...`, 'enemy'));
-    const ns = { ...state, player: { ...state.player, deathSaves: newDeathSaves }, log: [...state.log, ...logs].slice(-25) };
-    return { state: ns, result: 'dead' };
-  }
-
-  const ns = { ...state, player: { ...state.player, deathSaves: newDeathSaves }, log: [...state.log, ...logs].slice(-25) };
-  return { state: ns, result: 'continue' };
-};
-
-// ─── REST ───────────────────────────────────────────────────────────────────
-export const shortRest = (char: Character): Character => {
-  const available = char.hitDice.total - char.hitDice.used;
-  if (available <= 0) return char;
-  const { rolls, total } = rollDice({ count: 1, die: char.hitDice.die, modifier: getModifier(char.abilityScores.con) });
-  const healed = Math.min(char.maxHp - char.hp, total);
-  return {
-    ...char,
-    hp: char.hp + healed,
-    hitDice: { ...char.hitDice, used: char.hitDice.used + 1 },
-    cursedEnergy: Math.min(char.maxCursedEnergy, char.cursedEnergy + Math.floor(char.maxCursedEnergy / 2)),
-  };
-};
-
-export const longRest = (char: Character): Character => ({
-  ...char,
-  hp: char.maxHp,
-  tempHp: 0,
-  cursedEnergy: char.maxCursedEnergy,
-  hitDice: { ...char.hitDice, used: 0 },
-  deathSaves: { successes: 0, failures: 0 },
-  unlockedSkills: char.unlockedSkills.map(s => ({ ...s, currentCooldown: 0 })),
+const updateUnit = (state: BattleState, id: string, updater: (u: BattleUnit) => BattleUnit): BattleState => ({
+  ...state,
+  units: state.units.map(u => u.data.id === id ? updater(u) : u),
 });
 
-// ─── WIN / LOSS CHECK ──────────────────────────────────────────────────────
-export const checkBattleEnd = (state: BattleState): 'player_win' | 'player_dying' | 'enemy_win' | null => {
-  if (state.enemy.hp <= 0) return 'player_win';
-  if (state.player.hp <= 0) return 'player_dying'; // trigger death saves
+const updateData = <T extends Character | Enemy>(
+  u: BattleUnit & { kind: 'player'; data: T }
+  | BattleUnit & { kind: 'enemy'; data: T },
+  patch: Partial<T>
+): BattleUnit => ({ ...u, data: { ...u.data, ...patch } } as BattleUnit);
+
+const applyDamage = (target: Character | Enemy, dmg: number): Character | Enemy => {
+  let rem = dmg;
+  let tempHp = target.tempHp;
+  if (tempHp > 0) {
+    const abs = Math.min(tempHp, rem);
+    tempHp -= abs;
+    rem -= abs;
+  }
+  const newHp = Math.max(0, target.hp - rem);
+  return { ...target, hp: newHp, tempHp, isUnconscious: newHp <= 0, isDead: newHp <= 0 };
+};
+
+const applyHeal = (target: Character | Enemy, amt: number): Character | Enemy => ({
+  ...target, hp: Math.min(target.maxHp, target.hp + amt),
+});
+
+/** Check if any team has all members dead/unconscious */
+const checkWin = (units: BattleUnit[]): 0 | 1 | null => {
+  const team0alive = units.filter(u => u.teamId === 0 && !u.data.isUnconscious).length;
+  const team1alive = units.filter(u => u.teamId === 1 && !u.data.isUnconscious).length;
+  if (team0alive === 0) return 1;
+  if (team1alive === 0) return 0;
   return null;
 };
 
-// ─── USE ITEM IN BATTLE ───────────────────────────────────────────────────
-export const applyItemInBattle = (state: BattleState, effect: string): BattleState => {
-  const logs: BattleLog[] = [];
-  const newPlayer = { ...state.player };
+const hasStatusEffect = (unit: BattleUnit, type: StatusEffect['type']) =>
+  unit.data.statusEffects.some(e => e.type === type);
 
-  if (effect === 'heal_80') {
-    const healed = Math.min(newPlayer.maxHp - newPlayer.hp, 80);
-    newPlayer.hp += healed;
-    logs.push(log(`🩹 Использован бинт — восстановлено ${healed} HP`, 'system'));
-  } else if (effect === 'mana_50') {
-    const ce = Math.min(newPlayer.maxCursedEnergy - newPlayer.cursedEnergy, 5);
-    newPlayer.cursedEnergy += ce;
-    logs.push(log(`💎 Использован кристалл — восстановлено ${ce} Проклятой Энергии`, 'system'));
-  } else if (effect === 'buff_attack') {
-    logs.push(log(`⚗ Эликсир активирован — усиление на 3 раунда`, 'system'));
+// ─── MOVE ──────────────────────────────────────────────────────────────────
+export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: number): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit) return state;
+
+  const { data } = unit;
+  const cell = state.grid[toY]?.[toX];
+  if (!cell || cell.terrain === 'blocked') return state;
+  // Can't move to occupied cell
+  if (state.units.some(u => u.data.gridX === toX && u.data.gridY === toY && !u.data.isUnconscious)) return state;
+
+  const dist = chebyshevDist(data.gridX, data.gridY, toX, toY);
+  const ftCost = (cell.terrain === 'difficult' ? dist * 2 : dist) * CELL_FT;
+
+  if (ftCost > data.movementLeft) return state;
+
+  // Hazard damage
+  let extraLog: BattleLog[] = [];
+  let newData = { ...data, gridX: toX, gridY: toY, movementLeft: data.movementLeft - ftCost };
+  if (cell.terrain === 'hazard') {
+    const dmg = 1;
+    newData = applyDamage(newData, dmg) as typeof newData;
+    extraLog = [mkLog(`${data.name} наступает на опасную зону! ${dmg} урона`, 'system')];
   }
 
-  return { ...state, player: newPlayer, log: [...state.log, ...logs].slice(-25) };
+  const anims = [mkAnim('move', unitId, 200, { fromX: data.gridX, fromY: data.gridY, toX, toY })];
+
+  return {
+    ...updateUnit(state, unitId, u => ({ ...u, data: newData as typeof u.data })),
+    log: [...state.log, mkLog(`${data.name} перемещается (осталось ${newData.movementLeft} фут.)`, 'info'), ...extraLog].slice(-30),
+    animQueue: [...state.animQueue, ...anims],
+    reachableCells: getReachable(toX, toY, newData.movementLeft, state.grid),
+  };
+};
+
+// ─── ATTACK ────────────────────────────────────────────────────────────────
+export const executeAttack = (state: BattleState, attackerId: string, skill: Skill, targetId: string): BattleState => {
+  const attacker = getUnitById(state, attackerId);
+  const targetUnit = getUnitById(state, targetId);
+  if (!attacker || !targetUnit) return state;
+
+  const atk = attacker.data;
+  const tgt = targetUnit.data;
+
+  // Range check
+  const distFt = distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY);
+  if (distFt > skill.range + 5 && !skill.aoe) {
+    return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${skill.range + 5} фут.)`, 'info')].slice(-30) };
+  }
+
+  // Consume action
+  const actionPatch: Partial<Character & Enemy> = {};
+  if (skill.actionCost === 'action') actionPatch.hasAction = false;
+  if (skill.actionCost === 'bonus_action') actionPatch.hasBonusAction = false;
+  if (skill.actionCost === 'reaction') actionPatch.hasReaction = false;
+
+  let newState = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch } as typeof u.data }));
+
+  const logs: BattleLog[] = [];
+  const anims: AnimEvent[] = [mkAnim('attack', attackerId, 250, { toX: tgt.gridX, toY: tgt.gridY, skillName: skill.name })];
+
+  // Advantage / disadvantage
+  const inTree = (unit: BattleUnit) => {
+    const cell = state.grid[unit.data.gridY]?.[unit.data.gridX];
+    return cell?.prop === 'tree' || cell?.prop === 'bush';
+  };
+  const atkInTree = inTree(attacker);
+  const tgtInTree = inTree(targetUnit);
+  const hasAdv = hasStatusEffect(attacker, 'advantage_atk');
+  const hasDisAdv = hasStatusEffect(attacker, 'disadvantage_atk') || atkInTree || tgtInTree;
+
+  // ── 100% attack ──
+  if (skill.is100pct) {
+    const dmgRoll = rollDice(skill.damageDice);
+    const dmg = dmgRoll.total;
+    logs.push(mkLog(`💥 ${atk.name} — «${skill.name}» (100% попадание)! Урон: ${dmg}`,
+      'hit', { rolls: dmgRoll.rolls, total: dmg, mod: 0, die: skill.damageDice.die }));
+    anims.push(mkAnim('hit', targetId, 300, { isCrit: false }));
+    const newTarget = applyDamage(tgt, dmg);
+    newState = updateUnit(newState, targetId, u => ({ ...u, data: newTarget as typeof u.data }));
+    if (newTarget.isDead) anims.push(mkAnim('death', targetId, 400));
+  } else {
+    // ── Standard attack roll ──
+    const atkMod = getModifier(atk.abilityScores.str) + atk.proficiencyBonus;
+    const roll = attackRoll20(atkMod, tgt.armorClass, hasAdv, hasDisAdv);
+
+    logs.push(mkLog(
+      `🎲 ${atk.name} бросает d20 [${roll.roll}]+${atkMod} = ${roll.total} vs КБ ${tgt.armorClass}`,
+      'info', { rolls: [roll.roll], total: roll.total, mod: atkMod, die: 'd20' }
+    ));
+
+    if (!roll.hit) {
+      logs.push(mkLog(`💨 «${skill.name}» — ПРОМАХ!`, 'miss'));
+      anims.push(mkAnim('miss', targetId, 200));
+    } else {
+      // Check Black Flash (Divergent's Fist: 18-20 triggers blackFlash)
+      let finalDice = skill.damageDice;
+      let isBlackFlash = false;
+      if (skill.blackFlash && roll.roll >= 18) {
+        finalDice = skill.blackFlash.damageDice;
+        isBlackFlash = true;
+        logs.push(mkLog('⚡ ЧЁРНАЯ МОЛНИЯ! (18-20) 1к6 вместо 1к2!', 'special'));
+      }
+
+      // Crit: double dice (but for Divergent's Fist: roll BOTH 1к6 AND 1к2)
+      let dmgRoll: { rolls: number[]; total: number };
+      if (roll.crit) {
+        if (skill.blackFlash && isBlackFlash) {
+          // Special: roll 1к6 AND 1к2 separately
+          const r6 = rollDice(skill.blackFlash.damageDice);
+          const r2 = rollDice(skill.damageDice);
+          dmgRoll = { rolls: [...r6.rolls, ...r2.rolls], total: r6.total + r2.total };
+          logs.push(mkLog(`💥 КРИТ + ЧЁРНАЯ МОЛНИЯ! 1к6+1к2 = ${dmgRoll.total}`, 'critical'));
+        } else {
+          dmgRoll = rollDoubled(finalDice);
+          logs.push(mkLog(`💥 КРИТИЧЕСКОЕ ПОПАДАНИЕ! Урон удваивается!`, 'critical'));
+        }
+        anims.push(mkAnim('flash', attackerId, 400, { isCrit: true }));
+      } else {
+        dmgRoll = rollDice(finalDice);
+      }
+
+      let dmg = dmgRoll.total;
+
+      // Resistance / vulnerability
+      if (hasStatusEffect(targetUnit, 'resistance_all')) dmg = Math.floor(dmg / 2);
+      if (hasStatusEffect(targetUnit, 'vulnerability_all')) dmg = dmg * 2;
+
+      logs.push(mkLog(
+        `${roll.crit ? '💥' : '⚔'} «${skill.name}» попадает в ${tgt.name}! Урон: ${dmg}`,
+        roll.crit ? 'critical' : 'hit',
+        { rolls: dmgRoll.rolls, total: dmg, mod: 0, die: finalDice.die }
+      ));
+
+      anims.push(mkAnim('hit', targetId, 300, { isCrit: roll.crit }));
+
+      // Saving throw
+      let newTarget = applyDamage(tgt, dmg);
+      let newStatusFX = [...(newTarget.statusEffects ?? [])];
+
+      if (skill.savingThrow && skill.statusEffect) {
+        const saveScore = tgt.abilityScores[skill.savingThrow.stat];
+        const sv = savingThrow20(saveScore, skill.savingThrow.dc);
+        logs.push(mkLog(
+          `🎲 Спасбросок ${skill.savingThrow.stat.toUpperCase()} [${sv.roll}]+${getModifier(saveScore)}=${sv.total} vs СЛ${skill.savingThrow.dc} — ${sv.perfect ? 'ИДЕАЛЬНЫЙ!' : sv.success ? 'УСПЕХ' : 'ПРОВАЛ'}`,
+          'save', { rolls: [sv.roll], total: sv.total, mod: getModifier(saveScore), die: 'd20' }
+        ));
+        if (!sv.success) {
+          newStatusFX = [...newStatusFX, { ...skill.statusEffect }];
+          logs.push(mkLog(`🌀 ${tgt.name}: эффект «${skill.statusEffect.type}» (${skill.statusEffect.duration}р)`, 'system'));
+        } else if (sv.perfect) {
+          logs.push(mkLog(`✨ Идеальный спасбросок — урон не нанесён!`, 'special'));
+          newTarget = applyHeal(tgt, dmg) as typeof newTarget; // refund
+        }
+      } else if (skill.statusEffect && !skill.savingThrow) {
+        newStatusFX = [...newStatusFX, { ...skill.statusEffect }];
+      }
+
+      newTarget = { ...newTarget, statusEffects: newStatusFX } as typeof newTarget;
+      newState = updateUnit(newState, targetId, u => ({ ...u, data: newTarget as typeof u.data }));
+      if (newTarget.isDead) {
+        logs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death'));
+        anims.push(mkAnim('death', targetId, 500));
+      }
+    }
+  }
+
+  // Tick skill cooldown on attacker
+  if (skill.cooldownRounds > 0) {
+    newState = updateUnit(newState, attackerId, u => {
+      const skills = (u.data as Character).unlockedSkills
+        ? (u.data as Character).unlockedSkills.map(s => s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s)
+        : (u.data as Enemy).skills.map(s => s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s);
+      if ((u.data as Character).unlockedSkills) {
+        return { ...u, data: { ...u.data, unlockedSkills: skills } as typeof u.data };
+      }
+      return { ...u, data: { ...u.data, skills } as typeof u.data };
+    });
+  }
+
+  const winTeam = checkWin(newState.units);
+  return {
+    ...newState,
+    log: [...state.log, ...logs].slice(-30),
+    animQueue: [...state.animQueue, ...anims],
+    phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
+    winTeam: winTeam ?? undefined,
+  };
+};
+
+// ─── BASE ACTIONS ──────────────────────────────────────────────────────────
+
+/** Dash: consume action, refill movement */
+export const doDash = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasAction) return state;
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hasAction: false, movementLeft: u.data.movementLeft + u.data.speed } as typeof u.data
+  }));
+  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Рывок — движение удвоено!`, 'info')].slice(-30) };
+};
+
+/** Disengage: action, mark unit so it won't provoke */
+export const doDisengage = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasAction) return state;
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hasAction: false } as typeof u.data
+  }));
+  const newDisengage = new Set(state.disengage);
+  newDisengage.add(unitId);
+  return { ...newState, disengage: newDisengage, log: [...state.log, mkLog(`${unit.data.name}: Отход — не провоцирует атаки!`, 'info')].slice(-30) };
+};
+
+/** Jump: bonus action, half movement */
+export const doJump = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasBonusAction) return state;
+  const half = Math.floor(unit.data.speed / 2);
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hasBonusAction: false, movementLeft: u.data.movementLeft + half } as typeof u.data
+  }));
+  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Прыжок (+${half} фут.)`, 'info')].slice(-30) };
+};
+
+/** Push: bonus action, str contest */
+export const doPush = (state: BattleState, pusherId: string, targetId: string): BattleState => {
+  const pusher = getUnitById(state, pusherId);
+  const target = getUnitById(state, targetId);
+  if (!pusher || !target || !pusher.data.hasBonusAction) return state;
+
+  const pRoll = rollDieN(20) + getModifier(pusher.data.abilityScores.str);
+  const tRoll = rollDieN(20) + getModifier(target.data.abilityScores.str);
+  const logs: BattleLog[] = [mkLog(`🤜 ${pusher.data.name} толкает ${target.data.name}! ${pRoll} vs ${tRoll}`, 'info')];
+
+  let newState = updateUnit(state, pusherId, u => ({ ...u, data: { ...u.data, hasBonusAction: false } as typeof u.data }));
+
+  if (pRoll > tRoll) {
+    // Push target 5 feet away
+    const dx = Math.sign(target.data.gridX - pusher.data.gridX);
+    const dy = Math.sign(target.data.gridY - pusher.data.gridY);
+    const nx = target.data.gridX + dx;
+    const ny = target.data.gridY + dy;
+    const cell = state.grid[ny]?.[nx];
+    if (cell && cell.terrain !== 'blocked') {
+      newState = updateUnit(newState, targetId, u => ({ ...u, data: { ...u.data, gridX: nx, gridY: ny } as typeof u.data }));
+      logs.push(mkLog(`${pusher.data.name} побеждает — ${target.data.name} отброшен на 5 фут!`, 'hit'));
+    }
+  } else {
+    logs.push(mkLog(`${target.data.name} устоял!`, 'miss'));
+  }
+
+  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+};
+
+/** Call Cola: action, religion save, drink is free action */
+export const doCallCola = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasAction) return state;
+
+  const roll = rollDieN(20);
+  const logs: BattleLog[] = [mkLog(`🥤 Призыв Колы! Спасбросок религии: [${roll}]`, 'info',
+    { rolls: [roll], total: roll, mod: 0, die: 'd20' })];
+
+  let heal = 0;
+  if (roll === 20) { heal = 2; logs.push(mkLog('✨ 20! Эффект удваивается — +2 HP!', 'special')); }
+  else if (roll >= 10) { heal = 1; logs.push(mkLog('✅ Кола появилась! +1 HP', 'heal')); }
+  else { logs.push(mkLog('❌ Кола не появилась...', 'miss')); }
+
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hasAction: false, hp: Math.min(u.data.maxHp, u.data.hp + heal) } as typeof u.data
+  }));
+  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+};
+
+/** Catch breath: action + bonus + movement, CON save DC14 */
+export const doCatchBreath = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasAction || !unit.data.hasBonusAction) return state;
+
+  const score = unit.data.abilityScores.con;
+  const roll = rollDieN(20);
+  const total = roll + getModifier(score);
+  const success = roll === 20 || (roll !== 1 && total >= 14);
+  const perfect = roll === 20;
+  const logs: BattleLog[] = [mkLog(`💨 Отдышка! Спасбросок Телосложения [${roll}]+${getModifier(score)}=${total} vs СЛ14 — ${success ? 'УСПЕХ' : 'ПРОВАЛ'}`, 'save',
+    { rolls: [roll], total, mod: getModifier(score), die: 'd20' })];
+
+  let heal = 0;
+  if (success) {
+    heal = perfect ? 2 : 1;
+    logs.push(mkLog(`✅ Восстановлено ${heal} HP`, 'heal'));
+  } else {
+    logs.push(mkLog('❌ Не удалось отдышаться', 'miss'));
+  }
+
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: {
+      ...u.data,
+      hasAction: false, hasBonusAction: false, movementLeft: 0,
+      hp: Math.min(u.data.maxHp, u.data.hp + heal),
+    } as typeof u.data
+  }));
+  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+};
+
+/** Death save: d20 vs DC10 */
+export const doDeathSave = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.isUnconscious) return state;
+
+  const roll = rollDieN(20);
+  const logs: BattleLog[] = [mkLog(`💀 Спасбросок от смерти [${roll}]`, 'save', { rolls: [roll], total: roll, mod: 0, die: 'd20' })];
+  let { successes, failures } = unit.data.deathSaves;
+
+  let newHp = 0;
+  let isUnconscious = true;
+  let isDead = false;
+
+  if (roll === 20) {
+    newHp = 2;
+    isUnconscious = false;
+    successes = 0; failures = 0;
+    logs.push(mkLog('🌟 20! Встаёт с 2 HP!', 'special'));
+  } else if (roll === 1) {
+    failures += 2;
+    logs.push(mkLog('❌ 1 — два провала!', 'death'));
+  } else if (roll >= 10) {
+    successes += 1;
+    logs.push(mkLog(`✅ Успех ${successes}/3`, 'heal'));
+  } else {
+    failures += 1;
+    logs.push(mkLog(`❌ Провал ${failures}/3`, 'death'));
+  }
+
+  if (successes >= 3) { newHp = 1; isUnconscious = false; successes = 0; failures = 0; logs.push(mkLog('💚 Стабилизировался с 1 HP!', 'heal')); }
+  if (failures >= 3) { isDead = true; isUnconscious = true; logs.push(mkLog(`☠ ${unit.data.name} мёртв!`, 'death')); }
+
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hp: newHp, isUnconscious, isDead, deathSaves: { successes, failures } } as typeof u.data
+  }));
+  const winTeam = checkWin(newState.units);
+  return { ...newState, log: [...state.log, ...logs].slice(-30), phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active', winTeam: winTeam ?? undefined };
+};
+
+// ─── END TURN ─────────────────────────────────────────────────────────────
+export const endTurn = (state: BattleState): BattleState => {
+  const cur = getCurrentUnit(state);
+  const logs: BattleLog[] = [];
+
+  // Tick status effects on current unit
+  let newState = updateUnit(state, cur.data.id, u => {
+    const newFX = u.data.statusEffects
+      .map(e => ({ ...e, duration: e.duration - 1 }))
+      .filter(e => e.duration > 0);
+    // DoT
+    let hp = u.data.hp;
+    u.data.statusEffects.forEach(e => {
+      if (e.type === 'bleed' && e.value > 0) {
+        hp = Math.max(0, hp - e.value);
+        logs.push(mkLog(`🩸 ${u.data.name} кровотечение: −${e.value} HP`, 'system'));
+      }
+    });
+    return { ...u, data: { ...u.data, hp, statusEffects: newFX } as typeof u.data };
+  });
+
+  // Tick skill cooldowns
+  newState = updateUnit(newState, cur.data.id, u => {
+    if (u.kind === 'player') {
+      return { ...u, data: { ...u.data, unlockedSkills: u.data.unlockedSkills.map(s => ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) })) } as typeof u };
+    }
+    return { ...u, data: { ...u.data, skills: u.data.skills.map(s => ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) })) } as typeof u };
+  });
+
+  // Advance turn
+  const alive = newState.units.filter(u => !u.data.isUnconscious && !u.data.isDead);
+  if (alive.length === 0) return { ...newState, phase: 'defeat' };
+
+  let nextIdx = (state.currentUnitIndex + 1) % newState.units.length;
+  // Skip dead/unconscious
+  let safetyCounter = 0;
+  while ((newState.units[nextIdx].data.isUnconscious || newState.units[nextIdx].data.isDead) && safetyCounter < newState.units.length) {
+    nextIdx = (nextIdx + 1) % newState.units.length;
+    safetyCounter++;
+  }
+
+  const newRound = nextIdx === 0 ? state.round + 1 : state.round;
+  const nextUnit = newState.units[nextIdx];
+
+  // Reset actions for next unit
+  newState = updateUnit(newState, nextUnit.data.id, u => ({
+    ...u, data: { ...u.data, hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: u.data.speed } as typeof u.data
+  }));
+
+  // Clear disengage
+  const newDisengage = new Set<string>();
+
+  logs.push(mkLog(`─── Ход: ${nextUnit.data.name} (раунд ${newRound}) ───`, 'system'));
+
+  return {
+    ...newState,
+    currentUnitIndex: nextIdx,
+    round: newRound,
+    disengage: newDisengage,
+    selectedSkill: null,
+    movementMode: false,
+    reachableCells: [],
+    targetableCells: [],
+    log: [...state.log, ...logs].slice(-30),
+  };
+};
+
+// ─── ENEMY AI ──────────────────────────────────────────────────────────────
+export const runEnemyTurn = (state: BattleState): BattleState => {
+  const cur = getCurrentUnit(state);
+  if (cur.kind !== 'enemy') return state;
+
+  const enemy = cur.data as Enemy;
+  if (enemy.isUnconscious || enemy.isDead) return endTurn(state);
+
+  // Find nearest player unit
+  const playerUnits = state.units.filter(u => u.teamId === 0 && !u.data.isUnconscious);
+  if (playerUnits.length === 0) return endTurn(state);
+
+  const nearest = playerUnits.reduce((best, u) => {
+    const d = chebyshevDist(enemy.gridX, enemy.gridY, u.data.gridX, u.data.gridY);
+    const bd = chebyshevDist(enemy.gridX, enemy.gridY, best.data.gridX, best.data.gridY);
+    return d < bd ? u : best;
+  }, playerUnits[0]);
+
+  let newState = state;
+  const target = nearest;
+
+  // Move towards target
+  const dist = distFeet(enemy.gridX, enemy.gridY, target.data.gridX, target.data.gridY);
+  if (dist > 10) {
+    const dx = Math.sign(target.data.gridX - enemy.gridX);
+    const dy = Math.sign(target.data.gridY - enemy.gridY);
+    const nx = enemy.gridX + dx, ny = enemy.gridY + dy;
+    const cell = state.grid[ny]?.[nx];
+    const occupied = state.units.some(u => u.data.gridX === nx && u.data.gridY === ny && !u.data.isUnconscious);
+    if (cell && cell.terrain !== 'blocked' && !occupied) {
+      newState = moveUnit(newState, enemy.id, nx, ny);
+    }
+  }
+
+  // Pick skill
+  const available = enemy.skills.filter(s => s.currentCooldown === 0 && (s.actionCost === 'action'));
+  const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : enemy.skills[0];
+
+  const curEnemy = getUnitById(newState, enemy.id);
+  if (!curEnemy || !curEnemy.data.hasAction) return endTurn(newState);
+
+  const distNow = distFeet(curEnemy.data.gridX, curEnemy.data.gridY, target.data.gridX, target.data.gridY);
+  if (distNow <= skill.range + 5 || skill.aoe) {
+    newState = executeAttack(newState, enemy.id, skill, target.data.id);
+  }
+
+  return endTurn(newState);
+};
+
+// ─── UI helpers ────────────────────────────────────────────────────────────
+export const selectUnit = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit) return { ...state, selectedUnitId: null, selectedSkill: null, reachableCells: [], targetableCells: [], movementMode: false };
+  return {
+    ...state,
+    selectedUnitId: unitId,
+    selectedSkill: null,
+    movementMode: false,
+    reachableCells: unit.data.movementLeft > 0 ? getReachable(unit.data.gridX, unit.data.gridY, unit.data.movementLeft, state.grid) : [],
+    targetableCells: [],
+  };
+};
+
+export const selectSkill = (state: BattleState, skill: Skill, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit) return state;
+  return {
+    ...state,
+    selectedSkill: skill,
+    movementMode: false,
+    targetableCells: getTargetable(unit.data.gridX, unit.data.gridY, skill.range, state.grid),
+  };
+};
+
+export const toggleMovement = (state: BattleState, unitId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit) return state;
+  const next = !state.movementMode;
+  return {
+    ...state,
+    movementMode: next,
+    selectedSkill: next ? null : state.selectedSkill,
+    reachableCells: next ? getReachable(unit.data.gridX, unit.data.gridY, unit.data.movementLeft, state.grid) : [],
+    targetableCells: [],
+  };
 };

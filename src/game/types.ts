@@ -1,17 +1,15 @@
-export type GameScreen = 'mainMenu' | 'characterSelect' | 'worldMap' | 'battle' | 'inventory' | 'quests' | 'levelUp';
+export type GameScreen = 'mainMenu' | 'characterSelect' | 'worldMap' | 'battle' | 'pvp' | 'inventory' | 'quests';
+export type GameMode = 'story' | 'pvp' | 'skirmish';
 
 export type CharacterClass =
   | 'vessel' | 'honored_one' | 'gambler' | 'ten_shadows'
   | 'perfection' | 'blood_manipulator' | 'switcher' | 'defense_attorney'
   | 'cursed_partners' | 'puppet_master' | 'head_of_hei' | 'salaryman'
-  | 'locust' | 'star_rage' | 'six_eyes' | 'heavenly_restriction';
+  | 'locust' | 'star_rage';
 
 export type ElementType = 'cursed' | 'divine' | 'blood' | 'shadow' | 'domain' | 'physical' | 'void';
-
 export type ActionType = 'action' | 'bonus_action' | 'reaction' | 'free';
-
-// --- DnD dice ---
-export type DiceType = 'd4' | 'd6' | 'd8' | 'd10' | 'd12' | 'd20';
+export type DiceType = 'd2' | 'd4' | 'd6' | 'd8' | 'd10' | 'd12' | 'd20';
 
 export interface DiceRoll {
   count: number;
@@ -19,145 +17,230 @@ export interface DiceRoll {
   modifier: number;
 }
 
-// --- Skill (Technique) ---
+// ─── SKILL ────────────────────────────────────────────────────────────────
 export interface Skill {
   id: string;
   name: string;
   description: string;
-  /** Dice damage e.g. {count:2, die:'d6', modifier:3} */
   damageDice: DiceRoll;
-  /** Range in feet (5 = melee, 30/60 = ranged) */
-  range: number;
-  /** How many action points it costs */
+  range: number; // feet, 5 = melee
   actionCost: ActionType;
-  /** Spell slot / cursed energy cost (0 = free) */
-  energyCost: number;
+  energyCost: number;        // cursed energy / resource cost
   element: ElementType;
-  isUltimate?: boolean;
   requiresLevel: number;
-  savingThrow?: { stat: 'str' | 'dex' | 'con' | 'wis'; dc: number };
-  statusEffect?: StatusEffect;
+  isUltimate?: boolean;
+  isHeal?: boolean;
   aoe?: boolean;
   aoeRadius?: number;
-  /** Healing instead of damage */
-  isHeal?: boolean;
+  /** If true: no attack roll needed, damage always lands */
+  is100pct?: boolean;
+  /** If set: triggers on 18-20 attack roll */
+  blackFlash?: { damageDice: DiceRoll };
+  /** Cooldown in rounds (0 = no cooldown) */
   cooldownRounds: number;
   currentCooldown: number;
+  savingThrow?: { stat: keyof AbilityScores; dc: number };
+  statusEffect?: StatusEffect;
+  /** For reactions: triggered by what */
+  reactionTrigger?: 'melee_attack_received' | 'any_attack_received' | 'ally_attacked';
+  isReady?: boolean; // for reaction tracking
 }
 
-// --- Status effects ---
+// ─── STATUS EFFECTS ────────────────────────────────────────────────────────
 export interface StatusEffect {
-  type: 'burn' | 'stun' | 'bleed' | 'curse' | 'blessed' | 'weakened' | 'empowered' | 'grappled' | 'frightened';
-  duration: number;
-  value: number;
+  type: 'stun' | 'bleed' | 'curse' | 'weakened' | 'empowered' | 'grappled'
+      | 'frightened' | 'blessed' | 'sanctuary' | 'no_movement' | 'resistance_all'
+      | 'vulnerability_all' | 'disadvantage_atk' | 'advantage_atk';
+  duration: number; // rounds remaining
+  value: number;    // damage per round for DoT, or modifier value
   source?: string;
 }
 
-// --- DnD Ability Scores ---
+// ─── ABILITY SCORES ────────────────────────────────────────────────────────
 export interface AbilityScores {
-  str: number; // Strength
-  dex: number; // Dexterity
-  con: number; // Constitution
-  int: number; // Intelligence
-  wis: number; // Wisdom
-  cha: number; // Charisma
+  str: number;
+  dex: number;
+  con: number;
+  int: number;
+  wis: number;
+  cha: number;
 }
 
-// --- Hit Dice (DnD style) ---
+// ─── HIT DICE ──────────────────────────────────────────────────────────────
 export interface HitDice {
   die: DiceType;
   total: number;
   used: number;
 }
 
-// --- Character ---
-export interface Character {
+// ─── COMBATANT (shared between Character and Enemy) ─────────────────────────
+export interface Combatant {
   id: string;
-  class: CharacterClass;
   name: string;
-  title: string;
-  description: string;
-  emoji: string;
   color: string;
   glowColor: string;
 
-  // DnD HP system
   hp: number;
   maxHp: number;
   tempHp: number;
-  hitDice: HitDice;
-  deathSaves: { successes: number; failures: number };
+  armorClass: number;
+  speed: number;          // feet per turn
+  initiative: number;
+  proficiencyBonus: number;
 
-  // Cursed Energy (replaces mana/spell slots)
+  abilityScores: AbilityScores;
+  statusEffects: StatusEffect[];
+
+  gridX: number;
+  gridY: number;
+
+  // Which actions remain this turn
+  hasAction: boolean;
+  hasBonusAction: boolean;
+  hasReaction: boolean;
+  movementLeft: number;
+
+  deathSaves: { successes: number; failures: number };
+  isUnconscious: boolean;
+  isDead: boolean;
+}
+
+// ─── CHARACTER ─────────────────────────────────────────────────────────────
+export interface Character extends Combatant {
+  class: CharacterClass;
+  title: string;
+  description: string;
+  lore: string;
+  passiveBonus: string;
+
+  hitDice: HitDice;
   cursedEnergy: number;
   maxCursedEnergy: number;
 
-  // DnD Ability Scores
-  abilityScores: AbilityScores;
-
-  // Combat stats (derived from abilities)
-  armorClass: number;
-  initiative: number;
-  speed: number; // in feet
-
-  // Proficiency bonus (based on level, DnD formula)
-  proficiencyBonus: number;
-
-  // Level & Progression (DnD-slow)
   level: number;
   exp: number;
   expToNext: number;
 
-  // Skills (unlocked by level)
-  allSkills: Skill[];       // all possible skills for this class
-  unlockedSkills: Skill[];  // currently available
+  allSkills: Skill[];
+  unlockedSkills: Skill[];
 
-  passiveBonus: string;
-  lore: string;
-  comboPairs?: CharacterClass[];
-
-  // Position on battle grid
-  gridX: number;
-  gridY: number;
+  // visual
+  spriteColor: string; // for canvas rendering
 }
 
-// --- Enemy ---
-export interface Enemy {
-  id: string;
-  name: string;
-  emoji: string;
-  hp: number;
-  maxHp: number;
-  tempHp: number;
-  armorClass: number;
-  speed: number;
-  attack: number;
-  challengeRating: number; // CR instead of "level"
+// ─── ENEMY / NPC ──────────────────────────────────────────────────────────
+export interface Enemy extends Combatant {
+  challengeRating: number;
   skills: Skill[];
   exp: number;
   loot: Item[];
   isBoss?: boolean;
   description: string;
-  gridX: number;
-  gridY: number;
-  abilityScores: AbilityScores;
+  aiType: 'aggressive' | 'defensive' | 'ranged' | 'support';
 }
 
-// --- Items ---
+// ─── BATTLE UNIT (player or enemy in a fight) ───────────────────────────────
+export type BattleUnit = ({ kind: 'player'; data: Character } | { kind: 'enemy'; data: Enemy }) & {
+  teamId: 0 | 1; // team 0 = player side, team 1 = enemy side
+  turnIndex: number;
+};
+
+// ─── GRID ──────────────────────────────────────────────────────────────────
+export const GRID_COLS = 16;
+export const GRID_ROWS = 11;
+export const CELL_PX   = 52;  // pixels per cell in render
+export const CELL_FT   = 5;   // feet per cell
+
+export type TerrainType = 'open' | 'difficult' | 'blocked' | 'hazard' | 'cover';
+
+export interface GridCell {
+  x: number;
+  y: number;
+  terrain: TerrainType;
+  /** 'tree' | 'rock' | 'bush' | 'water' | ... */
+  prop?: string;
+  /** ground variant: 0-3 for tile variety */
+  tileVariant: number;
+}
+
+// ─── ACTION TYPES ──────────────────────────────────────────────────────────
+export type BattleActionKind =
+  | 'move'
+  | 'attack'           // use a skill
+  | 'dash'             // Рывок: double movement
+  | 'disengage'        // Отход: move without provoking
+  | 'dodge'            // defensive stance
+  | 'push'             // Толкнуть: bonus action
+  | 'jump'             // Прыжок: bonus action, half movement
+  | 'call_cola'        // Призыв Колы
+  | 'catch_breath'     // Отдышка
+  | 'death_save'       // Спасбросок от смерти
+  | 'end_turn'
+  | 'reaction';
+
+// ─── BATTLE LOG ────────────────────────────────────────────────────────────
+export interface BattleLog {
+  id: string;
+  text: string;
+  type: 'info' | 'hit' | 'miss' | 'critical' | 'heal' | 'death' | 'system' | 'save' | 'special';
+  diceResult?: { rolls: number[]; total: number; mod: number; die: DiceType };
+}
+
+// ─── ANIMATION QUEUE ───────────────────────────────────────────────────────
+export type AnimType = 'move' | 'attack' | 'hit' | 'miss' | 'death' | 'heal' | 'flash' | 'reaction';
+
+export interface AnimEvent {
+  id: string;
+  type: AnimType;
+  unitId: string;
+  fromX?: number; fromY?: number;
+  toX?: number;   toY?: number;
+  duration: number; // ms
+  startTime: number;
+  skillName?: string;
+  isCrit?: boolean;
+}
+
+// ─── BATTLE STATE ──────────────────────────────────────────────────────────
+export interface BattleState {
+  units: BattleUnit[];           // all combatants in order of initiative
+  currentUnitIndex: number;      // whose turn it is
+  round: number;
+  grid: GridCell[][];
+  log: BattleLog[];
+  animQueue: AnimEvent[];
+  phase: 'setup' | 'active' | 'victory' | 'defeat';
+  winTeam?: 0 | 1;
+
+  // UI selection state
+  selectedUnitId: string | null;
+  selectedSkill: Skill | null;
+  movementMode: boolean;
+  reachableCells: { x: number; y: number }[];
+  targetableCells: { x: number; y: number }[];
+
+  disengage: Set<string>; // unit IDs that used Disengage this turn
+  pendingReaction?: {
+    unitId: string;
+    skill: Skill;
+    targetId: string;
+  };
+}
+
+// ─── ITEMS ─────────────────────────────────────────────────────────────────
 export interface Item {
   id: string;
   name: string;
   description: string;
-  emoji: string;
-  type: 'weapon' | 'armor' | 'consumable' | 'cursed_object' | 'technique_scroll';
+  type: 'weapon' | 'armor' | 'consumable' | 'cursed_object' | 'scroll';
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
-  stats?: { attack?: number; defense?: number; hp?: number; mana?: number; speed?: number };
+  stats?: { ac?: number; hp?: number; speed?: number };
   quantity?: number;
   usable?: boolean;
   effect?: string;
 }
 
-// --- Quest ---
+// ─── QUESTS / WORLD ────────────────────────────────────────────────────────
 export interface Quest {
   id: string;
   title: string;
@@ -169,83 +252,33 @@ export interface Quest {
   completed: boolean;
   active: boolean;
   grade: 'S' | 'A' | 'B' | 'C' | 'D';
-  type: 'kill' | 'collect' | 'explore';
+  type: 'kill' | 'collect' | 'explore' | 'reach';
 }
 
-// --- Location ---
-export interface Location {
+export interface WorldNode {
   id: string;
   name: string;
   description: string;
-  emoji: string;
-  biome: 'urban' | 'forest' | 'dungeon' | 'prison' | 'void' | 'school' | 'ocean' | 'palace';
-  x: number;
-  y: number;
+  x: number; y: number; // % of map
+  biome: 'forest' | 'urban' | 'dungeon' | 'void' | 'palace' | 'school';
   minLevel: number;
-  enemyIds: string[];
-  bossId?: string;
+  enemyGroups: EnemyGroup[];
+  connections: string[];
   unlocked: boolean;
-  cleared: boolean;
-  connectedTo: string[];
+  events?: WorldEvent[]; // random events, shops, etc.
 }
 
-// --- Battle Grid ---
-export const GRID_COLS = 12;
-export const GRID_ROWS = 8;
-export const CELL_SIZE_FT = 5; // each cell = 5 feet
-export const BASE_SPEED_FT = 30; // default movement per turn
-
-export interface GridCell {
-  x: number;
-  y: number;
-  terrain: 'open' | 'difficult' | 'blocked' | 'hazard';
-  decoration?: string; // emoji
-}
-
-// --- Action Points ---
-export interface TurnActions {
-  hasAction: boolean;
-  hasBonusAction: boolean;
-  hasReaction: boolean;
-  movementLeft: number; // feet remaining
-}
-
-// --- Battle Log ---
-export interface BattleLog {
+export interface EnemyGroup {
   id: string;
-  text: string;
-  type: 'player' | 'enemy' | 'system' | 'combo' | 'critical' | 'miss' | 'save';
-  diceResult?: { rolls: number[]; total: number; die: DiceType };
+  name: string;
+  enemies: string[];   // enemy IDs
+  repeatable: boolean;
+  defeated: boolean;
 }
 
-// --- Battle State (DnD) ---
-export interface BattleState {
-  player: Character;
-  enemy: Enemy;
-  initiative: { order: ('player' | 'enemy')[]; currentIndex: number };
-  turn: 'player' | 'enemy';
-  round: number;
-  log: BattleLog[];
-  phase: 'initiative' | 'player_turn' | 'enemy_turn' | 'animation' | 'result';
-  playerActions: TurnActions;
-  enemyActions: TurnActions;
-  grid: GridCell[][];
-  playerStatusEffects: StatusEffect[];
-  enemyStatusEffects: StatusEffect[];
-  selectedSkill: Skill | null;
-  movementMode: boolean;
-  attackRollResult?: { roll: number; total: number; hit: boolean };
-}
-
-// --- Game State ---
-export interface GameState {
-  screen: GameScreen;
-  selectedCharacter: Character | null;
-  currentLocation: Location | null;
-  gold: number;
-  inventory: Item[];
-  quests: Quest[];
-  battleState: BattleState | null;
-  defeatedEnemies: number;
-  visitedLocations: string[];
+export interface WorldEvent {
+  id: string;
+  type: 'shop' | 'rest' | 'story' | 'challenge';
+  label: string;
+  available: boolean;
 }

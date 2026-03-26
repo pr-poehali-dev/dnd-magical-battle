@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 interface MainMenuProps {
   onNewGame: () => void;
   onContinue: () => void;
+  onPvP?: () => void;
   hasSave: boolean;
 }
 
@@ -15,7 +16,7 @@ const PARTICLES = Array.from({ length: 20 }, (_, i) => ({
   delay: Math.random() * 3,
 }));
 
-export default function MainMenu({ onNewGame, onContinue, hasSave }: MainMenuProps) {
+export default function MainMenu({ onNewGame, onContinue, onPvP, hasSave }: MainMenuProps) {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
@@ -111,6 +112,16 @@ export default function MainMenu({ onNewGame, onContinue, hasSave }: MainMenuPro
               style={{ boxShadow: '0 0 20px #06b6d440' }}
             >
               ▶ ПРОДОЛЖИТЬ
+            </button>
+          )}
+
+          {onPvP && (
+            <button
+              onClick={onPvP}
+              className="group py-4 px-8 bg-gradient-to-r from-red-900 to-orange-900 border border-red-500 rounded-xl font-title font-bold text-red-300 text-lg tracking-widest hover:from-red-700 hover:to-orange-700 transition-all duration-300"
+              style={{ boxShadow: '0 0 20px #ef444440' }}
+            >
+              ⚔ PvP — Чародей vs Чародей
             </button>
           )}
 

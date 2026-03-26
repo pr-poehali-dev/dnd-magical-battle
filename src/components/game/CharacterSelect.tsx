@@ -6,208 +6,158 @@ import { getModifier, abilityName } from '@/game/dndUtils';
 interface Props {
   onSelect: (character: Character) => void;
   onBack: () => void;
+  title?: string;
+  subtitle?: string;
 }
 
 const STAT_BAR = ({ value, max, color }: { value: number; max: number; color: string }) => (
   <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${(value / max) * 100}%`, backgroundColor: color }} />
+    <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100,(value / max) * 100)}%`, backgroundColor: color }} />
   </div>
 );
 
-const MOD = (score: number) => {
+const Mod = ({ score }: { score: number }) => {
   const m = getModifier(score);
   return <span className={m >= 0 ? 'text-green-400' : 'text-red-400'}>{m >= 0 ? '+' : ''}{m}</span>;
 };
 
-export default function CharacterSelect({ onSelect, onBack }: Props) {
+export default function CharacterSelect({ onSelect, onBack, title = 'Выбор чародея', subtitle }: Props) {
   const [selected, setSelected] = useState<Character>(CHARACTERS[0]);
-  const [hovered, setHovered] = useState<string | null>(null);
   const [tab, setTab] = useState<'stats' | 'skills' | 'lore'>('stats');
-
-  const char = selected;
 
   return (
     <div className="min-h-screen bg-[#050510] flex flex-col" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
-      {/* Header */}
-      <div className="border-b border-purple-900/40 px-6 py-3 flex items-center gap-4">
-        <button onClick={onBack} className="text-purple-400 hover:text-white text-sm font-mono tracking-widest transition-colors">
-          ← НАЗАД
-        </button>
-        <h2 className="text-white font-black text-xl tracking-[0.3em] uppercase">Выбор чародея</h2>
-        <div className="ml-auto text-purple-500 text-xs font-mono">{CHARACTERS.length} персонажей</div>
+      <div className="border-b border-purple-900/30 px-5 py-3 flex items-center gap-4">
+        <button onClick={onBack} className="text-purple-400 hover:text-white text-sm font-mono transition-colors">← НАЗАД</button>
+        <div>
+          <h2 className="text-white font-black text-xl tracking-widest uppercase">{title}</h2>
+          {subtitle && <div className="text-purple-400 text-xs font-mono">{subtitle}</div>}
+        </div>
+        <div className="ml-auto text-gray-600 text-xs font-mono">{CHARACTERS.length} персонажей</div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* ─── LEFT: Character list ─── */}
-        <div className="w-60 border-r border-purple-900/30 overflow-y-auto p-2 flex flex-col gap-1">
+        {/* List */}
+        <div className="w-52 border-r border-purple-900/20 overflow-y-auto p-2 flex flex-col gap-1">
           {CHARACTERS.map(c => (
-            <button key={c.id}
-              onClick={() => setSelected(c)}
-              onMouseEnter={() => setHovered(c.id)}
-              onMouseLeave={() => setHovered(null)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl border transition-all text-left"
+            <button key={c.id} onClick={() => setSelected(c)}
+              className="flex items-center gap-2 px-2 py-2 rounded-xl border text-left transition-all"
               style={{
                 borderColor: selected.id === c.id ? c.color : 'transparent',
-                backgroundColor: selected.id === c.id ? `${c.color}15` : hovered === c.id ? 'rgba(255,255,255,0.04)' : 'transparent',
-                boxShadow: selected.id === c.id ? `0 0 12px ${c.color}25` : 'none',
+                backgroundColor: selected.id === c.id ? `${c.color}15` : 'transparent',
               }}>
-              <div className="w-9 h-9 rounded-lg flex items-center justify-center text-lg flex-shrink-0"
-                style={{ backgroundColor: `${c.color}20`, border: `1px solid ${c.color}40` }}>
-                {c.emoji}
-              </div>
+              {/* Sprite circle */}
+              <div className="w-9 h-9 rounded-full flex-shrink-0 border-2"
+                style={{ backgroundColor: `${c.color}30`, borderColor: `${c.color}80`,
+                  background: `radial-gradient(circle at 35% 35%, rgba(255,255,255,0.4) 5%, ${c.color} 50%, ${c.color}88)` }} />
               <div className="min-w-0">
-                <div className="text-white text-xs font-bold truncate">{c.name}</div>
-                <div className="text-xs truncate" style={{ color: c.color }}>{c.title}</div>
+                <div className="text-white text-xs font-black truncate">{c.name}</div>
+                <div className="text-xs truncate font-mono" style={{ color: c.color }}>{c.title}</div>
               </div>
             </button>
           ))}
         </div>
 
-        {/* ─── RIGHT: Details ─── */}
+        {/* Detail */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Character header */}
-          <div className="p-5 border-b border-purple-900/20 flex gap-5 items-start">
-            <div className="w-24 h-24 rounded-2xl flex items-center justify-center text-5xl flex-shrink-0 relative"
+          {/* Header */}
+          <div className="p-4 border-b border-purple-900/15 flex gap-4">
+            {/* Sprite */}
+            <div className="w-20 h-20 rounded-2xl flex-shrink-0 relative"
               style={{
-                backgroundColor: `${char.color}15`,
-                border: `2px solid ${char.color}50`,
-                boxShadow: `0 0 30px ${char.color}25`,
+                background: `radial-gradient(circle at 35% 30%, rgba(255,255,255,0.5) 5%, ${selected.color} 45%, ${selected.color}99 80%)`,
+                border: `2px solid ${selected.color}80`,
+                boxShadow: `0 0 24px ${selected.color}40`,
               }}>
-              {char.emoji}
-              <div className="absolute inset-0 rounded-2xl animate-pulse opacity-10"
-                style={{ background: `radial-gradient(circle, ${char.color}, transparent)` }} />
+              {/* Simple face indicator */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full" style={{
+                  background: `radial-gradient(circle at 40% 35%, rgba(255,255,255,0.6) 10%, ${selected.color} 50%, rgba(0,0,0,0.3) 100%)`,
+                }} />
+              </div>
             </div>
             <div className="flex-1">
-              <div className="text-2xl font-black text-white">{char.name}</div>
-              <div className="font-bold mb-2" style={{ color: char.color }}>{char.title}</div>
-              <div className="text-gray-400 text-sm">{char.description}</div>
-              <div className="flex gap-3 mt-3 text-xs font-mono">
-                <div className="px-2 py-1 rounded bg-white/5 border border-white/10">
-                  <span className="text-gray-500">КБ </span><span className="text-white font-bold">{char.armorClass}</span>
-                </div>
-                <div className="px-2 py-1 rounded bg-white/5 border border-white/10">
-                  <span className="text-gray-500">HP </span><span className="text-green-400 font-bold">{char.maxHp}</span>
-                </div>
-                <div className="px-2 py-1 rounded bg-white/5 border border-white/10">
-                  <span className="text-gray-500">ПЭ </span><span className="text-purple-400 font-bold">{char.maxCursedEnergy}</span>
-                </div>
-                <div className="px-2 py-1 rounded bg-white/5 border border-white/10">
-                  <span className="text-gray-500">Скор. </span><span className="text-blue-400 font-bold">{char.speed}фут</span>
-                </div>
-                <div className="px-2 py-1 rounded bg-white/5 border border-white/10">
-                  <span className="text-gray-500">Кость хитов: </span><span className="text-yellow-400 font-bold">1{char.hitDice.die}</span>
-                </div>
+              <div className="text-2xl font-black text-white">{selected.name}</div>
+              <div className="font-bold mb-1" style={{ color: selected.color }}>{selected.title}</div>
+              <div className="text-gray-400 text-sm leading-relaxed">{selected.description}</div>
+              <div className="flex gap-2 mt-2 flex-wrap">
+                <span className="text-xs px-2 py-0.5 rounded font-mono bg-white/5 border border-white/10">
+                  <span className="text-green-400">HP</span> {selected.maxHp}
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded font-mono bg-white/5 border border-white/10">
+                  <span className="text-yellow-400">КБ</span> {selected.armorClass}
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded font-mono bg-white/5 border border-white/10">
+                  <span className="text-blue-400">Скор.</span> {selected.speed}ф
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded font-mono bg-white/5 border border-white/10">
+                  <span className="text-purple-400">ПЭ</span> {selected.maxCursedEnergy}
+                </span>
               </div>
             </div>
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-purple-900/20">
-            {(['stats', 'skills', 'lore'] as const).map(t => (
+          <div className="flex border-b border-purple-900/15">
+            {(['stats','skills','lore'] as const).map(t => (
               <button key={t} onClick={() => setTab(t)}
-                className="px-5 py-2.5 text-xs font-black tracking-widest uppercase transition-all"
-                style={{
-                  color: tab === t ? char.color : '#555',
-                  borderBottom: tab === t ? `2px solid ${char.color}` : '2px solid transparent',
-                }}>
-                {t === 'stats' ? '⚔ Характеристики' : t === 'skills' ? '✨ Техники' : '📖 Лор'}
+                className="px-5 py-2 text-xs font-black tracking-widest uppercase transition-all"
+                style={{ color: tab === t ? selected.color : '#555', borderBottom: tab === t ? `2px solid ${selected.color}` : '2px solid transparent' }}>
+                {t === 'stats' ? '⚔ Статы' : t === 'skills' ? '✨ Техники' : '📖 Лор'}
               </button>
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5">
-
-            {/* ─── STATS TAB ─── */}
+          <div className="flex-1 overflow-y-auto p-4">
             {tab === 'stats' && (
-              <div className="space-y-5">
-                {/* Ability scores */}
+              <div className="space-y-4">
                 <div>
-                  <div className="text-purple-400 text-xs font-mono tracking-widest uppercase mb-3">— Характеристики (DnD) —</div>
+                  <div className="text-purple-400 text-xs font-mono uppercase mb-2">Характеристики</div>
                   <div className="grid grid-cols-3 gap-2">
-                    {(Object.entries(char.abilityScores) as [keyof typeof char.abilityScores, number][]).map(([key, val]) => (
-                      <div key={key} className="p-2.5 rounded-xl border border-white/8 bg-white/3 text-center">
-                        <div className="text-gray-500 text-xs font-mono uppercase">{abilityName[key]}</div>
-                        <div className="text-white font-black text-xl">{val}</div>
-                        <div className="text-xs font-mono">{MOD(val)}</div>
+                    {(Object.entries(selected.abilityScores) as [keyof typeof selected.abilityScores, number][]).map(([k, v]) => (
+                      <div key={k} className="p-2 rounded-xl border border-white/8 bg-white/3 text-center">
+                        <div className="text-gray-500 text-xs uppercase">{abilityName[k]}</div>
+                        <div className="text-white font-black text-xl">{v}</div>
+                        <Mod score={v} />
                       </div>
                     ))}
                   </div>
                 </div>
-
-                {/* Combat stats */}
-                <div>
-                  <div className="text-purple-400 text-xs font-mono tracking-widest uppercase mb-3">— Боевые показатели —</div>
-                  <div className="space-y-2">
-                    {[
-                      { label: 'HP', value: char.maxHp, max: 200, color: '#22c55e' },
-                      { label: 'Скорость', value: char.speed, max: 50, color: '#3b82f6' },
-                      { label: 'Инициатива', value: char.initiative + 10, max: 20, color: '#f59e0b' },
-                    ].map(s => (
-                      <div key={s.label} className="space-y-1">
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-500 font-mono">{s.label}</span>
-                          <span className="text-white font-bold">{s.value}</span>
-                        </div>
-                        <STAT_BAR value={s.value} max={s.max} color={s.color} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Passive */}
                 <div className="p-3 rounded-xl border border-yellow-900/30 bg-yellow-500/5">
-                  <div className="text-yellow-400 text-xs font-black tracking-widest uppercase mb-1">⭐ Пассивная способность</div>
-                  <div className="text-yellow-200 text-sm">{char.passiveBonus}</div>
+                  <div className="text-yellow-400 text-xs font-black uppercase mb-1">⭐ Пассивная способность</div>
+                  <div className="text-yellow-200 text-sm">{selected.passiveBonus}</div>
                 </div>
               </div>
             )}
 
-            {/* ─── SKILLS TAB ─── */}
             {tab === 'skills' && (
               <div className="space-y-2">
-                <div className="text-purple-400 text-xs font-mono tracking-widest uppercase mb-3">
-                  — Все техники класса (открываются по уровням) —
-                </div>
-                {char.allSkills.map(sk => {
-                  const locked = sk.requiresLevel > 1;
+                <div className="text-gray-500 text-xs mb-2">Открываются по уровням. Сейчас доступно: {selected.unlockedSkills.length} из {selected.allSkills.length}</div>
+                {selected.allSkills.map(sk => {
+                  const locked = sk.requiresLevel > selected.level;
                   return (
-                    <div key={sk.id}
-                      className="p-3 rounded-xl border transition-all"
+                    <div key={sk.id} className="p-3 rounded-xl border transition-all"
                       style={{
-                        borderColor: locked ? '#ffffff10' : `${char.color}30`,
-                        backgroundColor: locked ? 'rgba(255,255,255,0.02)' : `${char.color}08`,
-                        opacity: locked ? 0.6 : 1,
+                        borderColor: locked ? '#ffffff10' : `${selected.color}30`,
+                        backgroundColor: locked ? 'rgba(255,255,255,0.02)' : `${selected.color}08`,
+                        opacity: locked ? 0.5 : 1,
                       }}>
-                      <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="flex justify-between items-start mb-1">
                         <div className="text-white text-sm font-black">{sk.name}</div>
-                        <div className="flex gap-1.5 flex-shrink-0">
-                          {locked && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-mono border border-white/10">
-                              🔒 Ур.{sk.requiresLevel}
-                            </span>
-                          )}
-                          {sk.isUltimate && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 font-bold border border-yellow-700/30">
-                              УЛЬТ
-                            </span>
-                          )}
+                        <div className="flex gap-1">
+                          {locked && <span className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-500 font-mono border border-white/10">🔒 Ур.{sk.requiresLevel}</span>}
+                          {sk.isUltimate && <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-400 border border-yellow-700/30">УЛЬТ</span>}
+                          {sk.is100pct && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-400 border border-blue-700/30">100%</span>}
                         </div>
                       </div>
-                      <div className="text-gray-400 text-xs mb-2">{sk.description}</div>
+                      <div className="text-gray-400 text-xs mb-1">{sk.description}</div>
                       <div className="flex gap-3 text-xs font-mono flex-wrap">
-                        <span className="text-red-400">
-                          ⚔ {sk.damageDice.count}к{sk.damageDice.die.slice(1)}
-                          {sk.damageDice.modifier > 0 ? `+${sk.damageDice.modifier}` : ''}
-                          {sk.isHeal ? ' исц.' : ''}
-                        </span>
-                        <span className="text-gray-500">{sk.range === 0 ? 'на себя' : `${sk.range} фут.`}</span>
-                        {sk.energyCost > 0 && <span className="text-purple-400">{sk.energyCost} ПЭ</span>}
-                        <span className="text-gray-600">
-                          {sk.actionCost === 'action' ? '1 действие' : sk.actionCost === 'bonus_action' ? 'бонус. действие' : sk.actionCost === 'reaction' ? 'реакция' : 'свободно'}
-                        </span>
-                        {sk.savingThrow && (
-                          <span className="text-cyan-400">СЛ {sk.savingThrow.dc} {sk.savingThrow.stat.toUpperCase()}</span>
-                        )}
+                        <span className="text-red-400">⚔ {sk.damageDice.count}к{sk.damageDice.die.slice(1)}{sk.damageDice.modifier > 0 ? `+${sk.damageDice.modifier}` : ''}</span>
+                        <span className="text-gray-500">{sk.range === 5 ? 'ближний' : `${sk.range}фт`}</span>
+                        <span className="text-yellow-500">{sk.actionCost === 'action' ? '1 действие' : sk.actionCost === 'bonus_action' ? 'бонус' : sk.actionCost === 'reaction' ? 'реакция' : 'свободно'}</span>
+                        {sk.cooldownRounds > 0 && <span className="text-orange-400">КД {sk.cooldownRounds}р</span>}
+                        {sk.blackFlash && <span className="text-purple-400">⚡Чёрная молния (18-20)</span>}
+                        {sk.savingThrow && <span className="text-cyan-400">СЛ{sk.savingThrow.dc} {sk.savingThrow.stat}</span>}
                       </div>
                     </div>
                   );
@@ -215,44 +165,20 @@ export default function CharacterSelect({ onSelect, onBack }: Props) {
               </div>
             )}
 
-            {/* ─── LORE TAB ─── */}
             {tab === 'lore' && (
               <div className="space-y-4">
-                <blockquote className="text-purple-200 text-lg italic leading-relaxed border-l-2 pl-4"
-                  style={{ borderColor: char.color }}>
-                  "{char.lore}"
+                <blockquote className="text-purple-200 text-base italic leading-relaxed border-l-2 pl-4" style={{ borderColor: selected.color }}>
+                  "{selected.lore}"
                 </blockquote>
-                <div className="text-gray-400 text-sm leading-relaxed">
-                  {char.description}
-                </div>
-                <div className="p-3 rounded-xl border border-purple-900/30 bg-purple-900/10">
-                  <div className="text-purple-400 text-xs font-mono uppercase mb-2">Кость хитов</div>
-                  <div className="text-white text-sm">
-                    {char.hitDice.die} за уровень + модификатор Телосложения ({getModifier(char.abilityScores.con) >= 0 ? '+' : ''}{getModifier(char.abilityScores.con)})
-                  </div>
-                </div>
-                <div className="p-3 rounded-xl border border-blue-900/30 bg-blue-900/10">
-                  <div className="text-blue-400 text-xs font-mono uppercase mb-2">Прокачка</div>
-                  <div className="text-gray-300 text-sm">
-                    Уровни растут медленно — как в DnD. Для 2-го уровня нужно 300 EXP, 3-го — 900 EXP. 
-                    Каждый уровень открывает новые техники.
-                  </div>
-                </div>
               </div>
             )}
           </div>
 
-          {/* Select button */}
-          <div className="p-4 border-t border-purple-900/20">
-            <button
-              onClick={() => onSelect(char)}
-              className="w-full py-3.5 rounded-xl font-black text-xl tracking-widest text-white uppercase transition-all duration-200 hover:scale-[1.02]"
-              style={{
-                background: `linear-gradient(135deg, ${char.color}cc, ${char.color}66)`,
-                boxShadow: `0 8px 30px ${char.color}40`,
-                border: `1px solid ${char.color}80`,
-              }}>
-              {char.emoji} Выбрать {char.name}
+          <div className="p-4 border-t border-purple-900/15">
+            <button onClick={() => onSelect(selected)}
+              className="w-full py-3.5 rounded-xl font-black text-xl tracking-widest text-white uppercase hover:scale-[1.02] transition-all"
+              style={{ background: `linear-gradient(135deg, ${selected.color}cc, ${selected.color}55)`, border: `1px solid ${selected.color}80`, boxShadow: `0 8px 28px ${selected.color}35` }}>
+              Выбрать {selected.name}
             </button>
           </div>
         </div>
