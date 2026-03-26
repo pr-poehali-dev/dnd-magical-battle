@@ -1,7 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import { Character, Location, Enemy, Item, BattleState, Quest } from '@/game/types';
-import { initBattle } from '@/game/battleEngine';
+import { initBattle, longRest } from '@/game/battleEngine';
+import { applyLevelUp } from '@/game/characters';
 import { ITEMS, QUESTS } from '@/game/worldData';
+import { XP_THRESHOLDS } from '@/game/dndUtils';
 
 import MainMenu from '@/components/game/MainMenu';
 import CharacterSelect from '@/components/game/CharacterSelect';
@@ -20,6 +22,7 @@ interface VictoryData {
   goldGained: number;
   loot: Item[];
   leveledUp: boolean;
+  newLevel?: number;
 }
 
 const INITIAL_INVENTORY: Item[] = [
@@ -28,35 +31,18 @@ const INITIAL_INVENTORY: Item[] = [
   { ...ITEMS[4] },
 ];
 
-const levelUp = (char: Character): Character => {
-  const newLevel = char.level + 1;
-  return {
-    ...char,
-    level: newLevel,
-    exp: char.exp - char.expToNext,
-    expToNext: Math.floor(char.expToNext * 1.4),
-    maxHp: char.maxHp + 20,
-    hp: char.maxHp + 20,
-    maxMana: char.maxMana + 10,
-    mana: char.maxMana + 10,
-    attack: char.attack + 3,
-    defense: char.defense + 2,
-    speed: char.speed + 1,
-  };
-};
-
 export default function Index() {
   const [screen, setScreen] = useState<Screen>('mainMenu');
   const [character, setCharacter] = useState<Character | null>(null);
   const [battleState, setBattleState] = useState<BattleState | null>(null);
   const [inventory, setInventory] = useState<Item[]>(INITIAL_INVENTORY);
   const [quests, setQuests] = useState<Quest[]>(QUESTS);
-  const [gold, setGold] = useState(100);
+  const [gold, setGold] = useState(50);
   const [visitedLocations, setVisitedLocations] = useState<string[]>([]);
-  const [currentLocation, setCurrentLocation] = useState<Location | null>(null);
   const [locationEnemies, setLocationEnemies] = useState<Enemy[]>([]);
   const [currentEnemyIndex, setCurrentEnemyIndex] = useState(0);
   const [victoryData, setVictoryData] = useState<VictoryData | null>(null);
+  const [currentBiome, setCurrentBiome] = useState('urban');
 
   const handleNewGame = () => setScreen('characterSelect');
 
@@ -65,15 +51,15 @@ export default function Index() {
     setScreen('worldMap');
   };
 
-  const handleEnterLocation = useCallback((location: Location, enemies: Enemy[]) => {
-    setCurrentLocation(location);
+  const handleEnterLocation = useCallback((location: Location, enemies: Enemy[], biome: string) => {
+    setCurrentBiome(biome);
     setLocationEnemies(enemies);
     setCurrentEnemyIndex(0);
     if (!visitedLocations.includes(location.id)) {
       setVisitedLocations(prev => [...prev, location.id]);
     }
     if (enemies.length > 0 && character) {
-      const state = initBattle({ ...character }, enemies[0]);
+      const state = initBattle({ ...character }, enemies[0], biome);
       setBattleState(state);
       setScreen('battle');
     }
@@ -85,22 +71,30 @@ export default function Index() {
 
   const handleVictory = useCallback((expGained: number) => {
     if (!character || !battleState) return;
-    const goldGained = Math.floor(expGained * 0.4);
+    const goldGained = Math.floor(expGained * 0.3 + Math.random() * 20);
     const loot: Item[] = [];
-    if (Math.random() < 0.5) {
-      const randItem = ITEMS[Math.floor(Math.random() * (ITEMS.length - 2))];
-      loot.push({ ...randItem, quantity: 1 });
+    if (Math.random() < 0.45) {
+      const idx = Math.floor(Math.random() * (ITEMS.length - 2));
+      loot.push({ ...ITEMS[idx], quantity: 1 });
     }
 
     let updatedChar = {
       ...character,
       exp: character.exp + expGained,
-      hp: Math.min(character.maxHp, character.hp + 30),
-      mana: Math.min(character.maxMana, character.mana + 20),
+      hp: Math.min(character.maxHp, battleState.player.hp),
+      cursedEnergy: battleState.player.cursedEnergy,
+      unlockedSkills: battleState.player.unlockedSkills,
     };
-    const didLevelUp = updatedChar.exp >= updatedChar.expToNext;
-    if (didLevelUp) updatedChar = levelUp(updatedChar);
 
+    // DnD slow level up
+    const didLevelUp = updatedChar.exp >= updatedChar.expToNext && updatedChar.level < 20;
+    let newLevel = updatedChar.level;
+    if (didLevelUp) {
+      updatedChar = applyLevelUp(updatedChar);
+      newLevel = updatedChar.level;
+    }
+
+    // Quest progress
     const updatedQuests = quests.map(q => {
       if (!q.active || q.completed) return q;
       if (q.type === 'kill') {
@@ -108,7 +102,7 @@ export default function Index() {
         const completed = newProgress >= q.required;
         if (completed) {
           updatedChar = { ...updatedChar, exp: updatedChar.exp + q.reward.exp };
-          setGold(g => g + goldGained + q.reward.gold);
+          setGold(g => g + q.reward.gold);
         }
         return { ...q, progress: newProgress, completed };
       }
@@ -126,7 +120,12 @@ export default function Index() {
     setGold(g => g + goldGained);
     setCharacter(updatedChar);
     setQuests(updatedQuests);
-    setVictoryData({ enemy: battleState.enemy, expGained, goldGained, loot, leveledUp: didLevelUp });
+    setVictoryData({
+      enemy: battleState.enemy,
+      expGained, goldGained, loot,
+      leveledUp: didLevelUp,
+      newLevel: didLevelUp ? newLevel : undefined,
+    });
     setCurrentEnemyIndex(prev => prev + 1);
     setScreen('victory');
   }, [character, battleState, quests]);
@@ -137,11 +136,15 @@ export default function Index() {
 
   const handleVictoryContinue = () => {
     if (!character) return;
-    if (locationEnemies[currentEnemyIndex]) {
-      const state = initBattle({ ...character }, locationEnemies[currentEnemyIndex]);
+    const idx = currentEnemyIndex;
+    if (locationEnemies[idx]) {
+      const state = initBattle({ ...character }, locationEnemies[idx], currentBiome);
       setBattleState(state);
       setScreen('battle');
     } else {
+      // Long rest between locations
+      const rested = longRest(character);
+      setCharacter(rested);
       setScreen('worldMap');
     }
   };
@@ -149,7 +152,7 @@ export default function Index() {
   const handleRetry = () => {
     if (!character || !locationEnemies.length) return;
     const idx = Math.max(0, currentEnemyIndex - 1);
-    const state = initBattle({ ...character }, locationEnemies[idx]);
+    const state = initBattle({ ...character }, locationEnemies[idx], currentBiome);
     setBattleState(state);
     setScreen('battle');
   };
@@ -165,12 +168,11 @@ export default function Index() {
     if (!character || !item.stats) return;
     setCharacter({
       ...character,
-      attack: character.attack + (item.stats.attack ?? 0),
-      defense: character.defense + (item.stats.defense ?? 0),
+      attack: character.armorClass + (item.stats.attack ?? 0), // store in AC for now
+      armorClass: character.armorClass + (item.stats.defense ?? 0),
       maxHp: character.maxHp + (item.stats.hp ?? 0),
       hp: Math.min(character.maxHp + (item.stats.hp ?? 0), character.hp + (item.stats.hp ?? 0)),
-      maxMana: character.maxMana + (item.stats.mana ?? 0),
-      mana: Math.min(character.maxMana + (item.stats.mana ?? 0), character.mana + (item.stats.mana ?? 0)),
+      maxCursedEnergy: character.maxCursedEnergy + Math.floor((item.stats.mana ?? 0) / 20),
     });
     setInventory(prev => prev.filter(i => i.id !== item.id));
   };
@@ -178,11 +180,7 @@ export default function Index() {
   return (
     <div className="min-h-screen" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
       {screen === 'mainMenu' && (
-        <MainMenu
-          onNewGame={handleNewGame}
-          onContinue={() => setScreen('worldMap')}
-          hasSave={character !== null}
-        />
+        <MainMenu onNewGame={handleNewGame} onContinue={() => setScreen('worldMap')} hasSave={character !== null} />
       )}
       {screen === 'characterSelect' && (
         <CharacterSelect onSelect={handleSelectCharacter} onBack={() => setScreen('mainMenu')} />
