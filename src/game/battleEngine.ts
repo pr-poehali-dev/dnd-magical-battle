@@ -11,7 +11,9 @@ import {
 let _logId = 0;
 let _animId = 0;
 const mkLog = (text: string, type: BattleLog['type'], dice?: BattleLog['diceResult']): BattleLog =>
-  ({ id: String(_logId++), text, type, diceResult: dice });
+  ({ id: String(_logId++), text, type, diceResult: dice })
+
+const LOG_MAX = 8;
 const mkAnim = (type: AnimEvent['type'], unitId: string, dur: number, extra: Partial<AnimEvent> = {}): AnimEvent =>
   ({ id: String(_animId++), type, unitId, duration: dur, startTime: Date.now(), ...extra });
 
@@ -161,9 +163,37 @@ export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: n
   return {
     ...updateUnit(state, unitId, u => ({ ...u, data: newData as typeof u.data })),
     unitsOnTree: newOnTree,
-    log: [...state.log, mkLog(`${data.name} перемещается (осталось ${newData.movementLeft} фут.)`, 'info')].slice(-30),
+    log: [...state.log, mkLog(`${data.name} перемещается (осталось ${newData.movementLeft} фут.)`, 'info')].slice(-LOG_MAX),
     animQueue: [...state.animQueue, ...anims],
     reachableCells: getReachable(toX, toY, newData.movementLeft, state.grid),
+  };
+};
+
+// ─── INFINITY STEP (Годжо: телепорт бонусным действием до 5 клеток) ──────────
+/** Blink к цели (до 5 клеток). Используется через UI отдельно. */
+export const doInfinityStep = (state: BattleState, unitId: string, targetId: string): BattleState => {
+  const unit = getUnitById(state, unitId);
+  const target = getUnitById(state, targetId);
+  if (!unit || !target || !unit.data.hasBonusAction) return state;
+
+  const dist = chebyshevDist(unit.data.gridX, unit.data.gridY, target.data.gridX, target.data.gridY);
+  if (dist > 5) {
+    return { ...state, log: [...state.log, mkLog(`❌ Цель слишком далеко для Infinity Step (>${5} кл)`, 'info')].slice(-LOG_MAX) };
+  }
+
+  // Teleport adjacent to target
+  const dx = Math.sign(target.data.gridX - unit.data.gridX);
+  const dy = Math.sign(target.data.gridY - unit.data.gridY);
+  const toX = Math.max(0, Math.min(GRID_COLS - 1, target.data.gridX - dx));
+  const toY = Math.max(0, Math.min(GRID_ROWS - 1, target.data.gridY - dy));
+
+  const newState = updateUnit(state, unitId, u => ({
+    ...u, data: { ...u.data, hasBonusAction: false, gridX: toX, gridY: toY } as typeof u.data
+  }));
+  return {
+    ...newState,
+    log: [...state.log, mkLog(`⚡ ${unit.data.name}: Infinity Step — телепортация!`, 'special')].slice(-LOG_MAX),
+    animQueue: [...state.animQueue, mkAnim('move', unitId, 150, { fromX: unit.data.gridX, fromY: unit.data.gridY, toX, toY })],
   };
 };
 
@@ -181,7 +211,60 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   // Range check: melee = exactly 5 ft (adjacent), ranged = up to skill.range ft
   const maxRange = skill.range; // range is exact, no bonus
   if (distFt > maxRange && !skill.aoe) {
-    return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${maxRange} фут.)`, 'info')].slice(-30) };
+    return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${maxRange} фут.)`, 'info')].slice(-LOG_MAX) };
+  }
+
+  // ── Lapse Blue: pull enemy to attacker, damage, then push 5 cells ─────────
+  if (skill.id === 'lapse_blue') {
+    const actionPatch2: Partial<Character & Enemy> = { hasAction: false };
+    let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch2 } as typeof u.data }));
+    const blueLogs: BattleLog[] = [];
+    const blueAnims: AnimEvent[] = [mkAnim('attack', attackerId, 300, { toX: tgt.gridX, toY: tgt.gridY, skillName: 'Lapse Blue' })];
+
+    // Pull: move target adjacent to attacker
+    const pullX = Math.max(0, Math.min(GRID_COLS - 1, atk.gridX + Math.sign(tgt.gridX - atk.gridX)));
+    const pullY = Math.max(0, Math.min(GRID_ROWS - 1, atk.gridY + Math.sign(tgt.gridY - atk.gridY)));
+    ns = updateUnit(ns, targetId, u => ({ ...u, data: { ...u.data, gridX: pullX, gridY: pullY } as typeof u.data }));
+    blueLogs.push(mkLog(`🔵 Lapse Blue! ${tgt.name} притянут к ${atk.name}!`, 'special'));
+    blueAnims.push(mkAnim('move', targetId, 300, { fromX: tgt.gridX, fromY: tgt.gridY, toX: pullX, toY: pullY }));
+
+    // Saving throw CON DC10 — half dmg on success
+    const sv = savingThrow20(tgt.abilityScores.con, 10);
+    const dmgRoll = rollDice(skill.damageDice);
+    const fullDmg = dmgRoll.total;
+    const finalDmg = sv.success ? Math.floor(fullDmg / 2) : fullDmg;
+    blueLogs.push(mkLog(`🎲 Спасбросок ТЕЛ [${sv.roll}]+${getModifier(tgt.abilityScores.con)}=${sv.total} vs СЛ10 — ${sv.success ? 'УСПЕХ (пол урона)' : 'ПРОВАЛ'}`, 'save', { rolls: [sv.roll], total: sv.total, mod: getModifier(tgt.abilityScores.con), die: 'd20' }));
+    blueLogs.push(mkLog(`⚔ Blue удар: ${finalDmg} урона в ${tgt.name}`, 'hit', { rolls: dmgRoll.rolls, total: finalDmg, mod: 0, die: skill.damageDice.die }));
+    blueAnims.push(mkAnim('hit', targetId, 300));
+
+    // Apply damage
+    const curTgt = (getUnitById(ns, targetId)?.data ?? tgt);
+    const damagedTgt = applyDamage(curTgt, finalDmg);
+    ns = updateUnit(ns, targetId, u => ({ ...u, data: damagedTgt as typeof u.data }));
+
+    // Push: 5 cells away from attacker
+    const curT = getUnitById(ns, targetId)?.data ?? damagedTgt;
+    const pushDx = Math.sign(curT.gridX - atk.gridX) || 1;
+    const pushDy = Math.sign(curT.gridY - atk.gridY);
+    let pushX = curT.gridX + pushDx * 5;
+    let pushY = curT.gridY + pushDy * 5;
+    pushX = Math.max(0, Math.min(GRID_COLS - 1, pushX));
+    pushY = Math.max(0, Math.min(GRID_ROWS - 1, pushY));
+    const fromPX = curT.gridX; const fromPY = curT.gridY;
+    ns = updateUnit(ns, targetId, u => ({ ...u, data: { ...u.data, gridX: pushX, gridY: pushY } as typeof u.data }));
+    blueLogs.push(mkLog(`💨 ${tgt.name} отброшен на 5 клеток!`, 'special'));
+    blueAnims.push(mkAnim('move', targetId, 500, { fromX: fromPX, fromY: fromPY, toX: pushX, toY: pushY }));
+
+    if (damagedTgt.isDead) { blueLogs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death')); blueAnims.push(mkAnim('death', targetId, 400)); }
+
+    const winT = checkWin(ns.units);
+    return {
+      ...ns,
+      log: [...state.log, ...blueLogs].slice(-LOG_MAX),
+      animQueue: [...state.animQueue, ...blueAnims],
+      phase: winT !== null ? (winT === 0 ? 'victory' : 'defeat') : 'active',
+      winTeam: winT ?? undefined,
+    };
   }
 
   // Consume action
@@ -209,7 +292,7 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   if (atkOnTree && !tgtOnTree) {
     // On tree and can't attack ground units unless AoE reaches
     if (!skill.aoe) {
-      return { ...state, log: [...state.log, mkLog(`❌ ${atk.name} на дереве — не может атаковать наземные цели!`, 'info')].slice(-30) };
+      return { ...state, log: [...state.log, mkLog(`❌ ${atk.name} на дереве — не может атаковать наземные цели!`, 'info')].slice(-LOG_MAX) };
     }
   }
   const hasAdv = hasStatusEffect(attacker, 'advantage_atk');
@@ -350,7 +433,7 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   return {
     ...newState,
     grid: finalGrid,
-    log: [...state.log, ...logs].slice(-30),
+    log: [...state.log, ...logs].slice(-LOG_MAX),
     animQueue: [...state.animQueue, ...anims],
     phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
     winTeam: winTeam ?? undefined,
@@ -366,7 +449,7 @@ export const doDash = (state: BattleState, unitId: string): BattleState => {
   const newState = updateUnit(state, unitId, u => ({
     ...u, data: { ...u.data, hasAction: false, movementLeft: u.data.movementLeft + u.data.speed } as typeof u.data
   }));
-  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Рывок — движение удвоено!`, 'info')].slice(-30) };
+  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Рывок — движение удвоено!`, 'info')].slice(-LOG_MAX) };
 };
 
 /** Disengage: action, mark unit so it won't provoke */
@@ -378,7 +461,7 @@ export const doDisengage = (state: BattleState, unitId: string): BattleState => 
   }));
   const newDisengage = new Set(state.disengage);
   newDisengage.add(unitId);
-  return { ...newState, disengage: newDisengage, log: [...state.log, mkLog(`${unit.data.name}: Отход — не провоцирует атаки!`, 'info')].slice(-30) };
+  return { ...newState, disengage: newDisengage, log: [...state.log, mkLog(`${unit.data.name}: Отход — не провоцирует атаки!`, 'info')].slice(-LOG_MAX) };
 };
 
 /** Jump: bonus action, costs half movement (does NOT add movement).
@@ -397,7 +480,7 @@ export const doJump = (state: BattleState, unitId: string, toX?: number, toY?: n
     if (cell && cell.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0) {
       // Must be adjacent (within 5ft)
       const dist = chebyshevDist(unit.data.gridX, unit.data.gridY, toX, toY);
-      if (dist > 1) return { ...state, log: [...state.log, mkLog(`❌ Слишком далеко для прыжка на дерево!`, 'info')].slice(-30) };
+      if (dist > 1) return { ...state, log: [...state.log, mkLog(`❌ Слишком далеко для прыжка на дерево!`, 'info')].slice(-LOG_MAX) };
 
       const newOnTree = new Set(state.unitsOnTree);
       newOnTree.add(unitId);
@@ -406,7 +489,7 @@ export const doJump = (state: BattleState, unitId: string, toX?: number, toY?: n
       }));
       return {
         ...newState, unitsOnTree: newOnTree,
-        log: [...state.log, mkLog(`🌲 ${unit.data.name} запрыгивает на дерево! Атаки по нему — с помехой.`, 'special')].slice(-30),
+        log: [...state.log, mkLog(`🌲 ${unit.data.name} запрыгивает на дерево! Атаки по нему — с помехой.`, 'special')].slice(-LOG_MAX),
         animQueue: [...state.animQueue, mkAnim('move', unitId, 250, { fromX: unit.data.gridX, fromY: unit.data.gridY, toX, toY })],
       };
     }
@@ -416,7 +499,7 @@ export const doJump = (state: BattleState, unitId: string, toX?: number, toY?: n
   const newState = updateUnit(state, unitId, u => ({
     ...u, data: { ...u.data, hasBonusAction: false, movementLeft: half } as typeof u.data
   }));
-  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Прыжок (движение уполовинено)`, 'info')].slice(-30) };
+  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Прыжок (движение уполовинено)`, 'info')].slice(-LOG_MAX) };
 };
 
 /** Push: bonus action, str contest */
@@ -446,7 +529,7 @@ export const doPush = (state: BattleState, pusherId: string, targetId: string): 
     logs.push(mkLog(`${target.data.name} устоял!`, 'miss'));
   }
 
-  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+  return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 
 /** Call Cola: action, religion save, drink is free action */
@@ -466,7 +549,7 @@ export const doCallCola = (state: BattleState, unitId: string): BattleState => {
   const newState = updateUnit(state, unitId, u => ({
     ...u, data: { ...u.data, hasAction: false, hp: Math.min(u.data.maxHp, u.data.hp + heal) } as typeof u.data
   }));
-  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+  return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 
 /** Catch breath: action + bonus + movement, CON save DC14.
@@ -478,7 +561,7 @@ export const doCatchBreath = (state: BattleState, unitId: string): BattleState =
   // Юджи (cursedEnergy = 0) не может использовать отдышку
   const charData = unit.kind === 'player' ? unit.data : null;
   if (charData && charData.maxCursedEnergy === 0) {
-    return { ...state, log: [...state.log, mkLog(`❌ ${charData.name} не имеет ячеек — отдышка недоступна!`, 'info')].slice(-30) };
+    return { ...state, log: [...state.log, mkLog(`❌ ${charData.name} не имеет ячеек — отдышка недоступна!`, 'info')].slice(-LOG_MAX) };
   }
 
   const score = unit.data.abilityScores.con;
@@ -504,7 +587,7 @@ export const doCatchBreath = (state: BattleState, unitId: string): BattleState =
       hp: Math.min(u.data.maxHp, u.data.hp + heal),
     } as typeof u.data
   }));
-  return { ...newState, log: [...state.log, ...logs].slice(-30) };
+  return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 
 /** Death save: d20 vs DC10 */
@@ -543,7 +626,7 @@ export const doDeathSave = (state: BattleState, unitId: string): BattleState => 
     ...u, data: { ...u.data, hp: newHp, isUnconscious, isDead, deathSaves: { successes, failures } } as typeof u.data
   }));
   const winTeam = checkWin(newState.units);
-  return { ...newState, log: [...state.log, ...logs].slice(-30), phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active', winTeam: winTeam ?? undefined };
+  return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX), phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active', winTeam: winTeam ?? undefined };
 };
 
 // ─── END TURN ─────────────────────────────────────────────────────────────
@@ -615,7 +698,7 @@ export const endTurn = (state: BattleState): BattleState => {
     movementMode: false,
     reachableCells: [],
     targetableCells: [],
-    log: [...state.log, ...logs].slice(-30),
+    log: [...state.log, ...logs].slice(-LOG_MAX),
   };
 };
 

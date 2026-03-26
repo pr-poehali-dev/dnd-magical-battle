@@ -5,7 +5,7 @@ import {
 import {
   moveUnit, executeAttack, doDash, doDisengage, doJump,
   doCallCola, doCatchBreath, doDeathSave, endTurn, runEnemyTurn,
-  getCurrentUnit, selectSkill, toggleMovement, TREE_HP
+  getCurrentUnit, selectSkill, toggleMovement, TREE_HP, doInfinityStep
 } from '@/game/battleEngine';
 
 interface Props {
@@ -18,6 +18,8 @@ interface Props {
 // ─── ANIM TYPES ──────────────────────────────────────────────────────────────
 interface MoveAnim { unitId: string; fromX: number; fromY: number; toX: number; toY: number; startMs: number; durationMs: number }
 interface FlashAnim { unitId: string; kind: 'attack' | 'hit' | 'dodge'; startMs: number; durationMs: number }
+// Skill effect overlays on canvas (not tied to a unit position)
+interface SkillFx { id: string; kind: 'blue_wave' | 'red_explosion' | 'blink'; x: number; y: number; startMs: number; durationMs: number }
 
 // ─── TILE DRAW ────────────────────────────────────────────────────────────────
 const TILE_GRASS = ['#2d4a1e','#2a461c','#31501f','#294219'];
@@ -257,6 +259,7 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   const visualPosRef = useRef<Record<string, { x: number; y: number }>>({});
   const moveAnimsRef = useRef<MoveAnim[]>([]);
   const flashAnimsRef = useRef<FlashAnim[]>([]);
+  const skillFxRef = useRef<SkillFx[]>([]);
   const prevGridRef   = useRef<Record<string, { x: number; y: number }>>({});
 
   // Trigger re-render from rAF
@@ -265,6 +268,24 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   const [processing, setProcessing] = useState(false);
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number } | null>(null);
   const [jumpMode, setJumpMode] = useState(false);
+  // ── Dice roll animation ───────────────────────────────────────────────────────
+  const [diceAnim, setDiceAnim] = useState<{
+    value: number; die: string; label: string; phase: 'rolling' | 'result' | 'fading';
+  } | null>(null);
+  const diceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showDice = (value: number, die: string, label: string) => {
+    if (diceTimerRef.current) clearTimeout(diceTimerRef.current);
+    setDiceAnim({ value, die, label, phase: 'rolling' });
+    diceTimerRef.current = setTimeout(() => {
+      setDiceAnim(d => d ? { ...d, phase: 'result' } : null);
+      diceTimerRef.current = setTimeout(() => {
+        setDiceAnim(d => d ? { ...d, phase: 'fading' } : null);
+        diceTimerRef.current = setTimeout(() => setDiceAnim(null), 600);
+      }, 900);
+    }, 500);
+  };
+
   // Pending Manji Kick reaction
   const [pendingReaction, setPendingReaction] = useState<{
     attackerId: string;
@@ -333,6 +354,8 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
 
       // Remove expired flash anims
       flashAnimsRef.current = flashAnimsRef.current.filter(f => now - f.startMs < f.durationMs);
+      // Remove expired skill fx
+      skillFxRef.current = skillFxRef.current.filter(f => now - f.startMs < f.durationMs);
 
       // Draw
       const canvas = canvasRef.current;
@@ -378,6 +401,56 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
               now,
             );
           });
+
+          // ── Skill FX overlays ──────────────────────────────────────────────
+          skillFxRef.current.forEach(fx => {
+            const t = Math.min(1, (now - fx.startMs) / fx.durationMs);
+            const alpha = t < 0.5 ? t * 2 : (1 - t) * 2;
+            ctx.save();
+            if (fx.kind === 'blue_wave') {
+              // Expanding blue ring
+              const r = 20 + t * 80;
+              const grad = ctx.createRadialGradient(fx.x, fx.y, 0, fx.x, fx.y, r);
+              grad.addColorStop(0, `rgba(6,182,212,${alpha * 0.9})`);
+              grad.addColorStop(0.4, `rgba(14,116,144,${alpha * 0.5})`);
+              grad.addColorStop(1, `rgba(6,182,212,0)`);
+              ctx.fillStyle = grad;
+              ctx.beginPath(); ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2); ctx.fill();
+              // Inner bright pulse
+              ctx.fillStyle = `rgba(165,243,252,${alpha * 0.8})`;
+              ctx.beginPath(); ctx.arc(fx.x, fx.y, 12 * (1 - t), 0, Math.PI * 2); ctx.fill();
+            } else if (fx.kind === 'red_explosion') {
+              // Expanding red burst
+              const r2 = 10 + t * 2 * CELL_PX; // 2 cell radius
+              const grad2 = ctx.createRadialGradient(fx.x, fx.y, 0, fx.x, fx.y, r2);
+              grad2.addColorStop(0, `rgba(251,113,133,${alpha * 0.95})`);
+              grad2.addColorStop(0.3, `rgba(239,68,68,${alpha * 0.7})`);
+              grad2.addColorStop(0.7, `rgba(185,28,28,${alpha * 0.4})`);
+              grad2.addColorStop(1, `rgba(239,68,68,0)`);
+              ctx.fillStyle = grad2;
+              ctx.beginPath(); ctx.arc(fx.x, fx.y, r2, 0, Math.PI * 2); ctx.fill();
+              // Spike lines
+              for (let i = 0; i < 8; i++) {
+                const ang = (i / 8) * Math.PI * 2 + t * 2;
+                const len = r2 * (0.6 + Math.sin(t * 10 + i) * 0.2);
+                ctx.strokeStyle = `rgba(253,186,116,${alpha * 0.7})`;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(fx.x + Math.cos(ang) * 8, fx.y + Math.sin(ang) * 8);
+                ctx.lineTo(fx.x + Math.cos(ang) * len, fx.y + Math.sin(ang) * len);
+                ctx.stroke();
+              }
+            } else if (fx.kind === 'blink') {
+              // Purple teleport flash
+              const r3 = 30 * (1 - t);
+              ctx.fillStyle = `rgba(168,85,247,${alpha * 0.7})`;
+              ctx.beginPath(); ctx.arc(fx.x, fx.y, r3 + 5, 0, Math.PI * 2); ctx.fill();
+              ctx.strokeStyle = `rgba(216,180,254,${alpha})`;
+              ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.arc(fx.x, fx.y, r3, 0, Math.PI * 2); ctx.stroke();
+            }
+            ctx.restore();
+          });
         }
       }
 
@@ -402,6 +475,14 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
       ...flashAnimsRef.current.filter(f => !(f.unitId === unitId && f.kind === kind)),
       { unitId, kind, startMs: performance.now(), durationMs },
     ];
+  };
+
+  // ── Helper: add skill FX on canvas ──────────────────────────────────────────
+  const addSkillFx = (kind: SkillFx['kind'], gridX: number, gridY: number, durationMs = 700) => {
+    const id = String(Math.random());
+    const x = gridX * CELL_PX + CELL_PX / 2;
+    const y = gridY * CELL_PX + CELL_PX / 2;
+    skillFxRef.current = [...skillFxRef.current, { id, kind, x, y, startMs: performance.now(), durationMs }];
   };
 
   // ── Enemy AI ─────────────────────────────────────────────────────────────────
@@ -492,15 +573,44 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     }
 
     if (battleState.selectedSkill) {
+      const sk = battleState.selectedSkill;
       const tgt = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
+
+      // Infinity Step — click any unit to teleport to them
+      if (sk.id === 'gojo_blink') {
+        const anyUnit = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
+        if (anyUnit && anyUnit.data.id !== curId) {
+          addSkillFx('blink', curUnit.data.gridX, curUnit.data.gridY, 500);
+          addSkillFx('blink', cx, cy, 500);
+          const next2 = doInfinityStep(battleState, curId, anyUnit.data.id);
+          onBattleUpdate({ ...next2, selectedSkill: null, targetableCells: [] });
+        }
+        return;
+      }
+
       if (tgt && tgt.teamId !== curUnit.teamId) {
-        if (battleState.targetableCells.some(c => c.x === cx && c.y === cy) || battleState.selectedSkill.aoe) {
-          flash(curId, 'attack', 300);
+        if (battleState.targetableCells.some(c => c.x === cx && c.y === cy) || sk.aoe) {
+          flash(curId, 'attack', 350);
+
+          // Skill-specific FX
+          if (sk.id === 'lapse_blue') {
+            addSkillFx('blue_wave', curUnit.data.gridX, curUnit.data.gridY, 800);
+            setTimeout(() => addSkillFx('blue_wave', tgt.data.gridX, tgt.data.gridY, 600), 200);
+          } else if (sk.id === 'reversal_red') {
+            addSkillFx('red_explosion', cx, cy, 900);
+          }
+
           const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
-          const next = executeAttack(battleState, curId, battleState.selectedSkill, tgt.data.id);
+          const next = executeAttack(battleState, curId, sk, tgt.data.id);
+          // Show dice
+          const newLogs = next.log.slice(battleState.log.length);
+          const diceLog = newLogs.find(l => l.diceResult);
+          if (diceLog?.diceResult) {
+            showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
+          }
           next.units.forEach(u => {
             const p = prevHps.get(u.data.id);
-            if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 400), 200);
+            if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 300);
           });
           onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [] });
         }
@@ -577,6 +687,15 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
       return;
     }
     setJumpMode(false);
+    // Infinity Step: highlight all units within 5 cells
+    if (sk.id === 'gojo_blink') {
+      const allTargets = battleState.units
+        .filter(u => u.data.id !== curUnit.data.id && !u.data.isUnconscious &&
+          Math.max(Math.abs(u.data.gridX - curUnit.data.gridX), Math.abs(u.data.gridY - curUnit.data.gridY)) <= 5)
+        .map(u => ({ x: u.data.gridX, y: u.data.gridY }));
+      onBattleUpdate({ ...battleState, selectedSkill: sk, movementMode: false, targetableCells: allTargets });
+      return;
+    }
     onBattleUpdate({ ...battleState, movementMode: false, ...selectSkill(battleState, sk, curUnit.data.id) });
   };
 
@@ -794,6 +913,42 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
           </div>
         </div>
       </div>
+
+      {/* ── DICE ROLL OVERLAY ─────────────────────────────────────────────── */}
+      {diceAnim && (
+        <div className="fixed inset-0 pointer-events-none flex items-center justify-center z-50"
+          style={{ opacity: diceAnim.phase === 'fading' ? 0 : 1, transition: 'opacity 0.6s ease' }}>
+          <div className="flex flex-col items-center gap-3"
+            style={{
+              animation: diceAnim.phase === 'result' ? 'dice-bounce 0.4s ease-out forwards' : undefined,
+              transform: diceAnim.phase === 'rolling' ? 'scale(0.5) rotate(-30deg)' : undefined,
+              transition: diceAnim.phase === 'rolling' ? undefined : 'transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)',
+            }}>
+            {/* Die shape */}
+            <div className="relative flex items-center justify-center"
+              style={{
+                width: 96, height: 96,
+                background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)',
+                border: '2px solid #818cf8',
+                borderRadius: 16,
+                boxShadow: '0 0 40px rgba(129,140,248,0.6), 0 0 80px rgba(129,140,248,0.2)',
+                animation: diceAnim.phase === 'rolling' ? 'spin 0.4s linear' : 'none',
+              }}>
+              <span className="text-4xl font-black text-white" style={{ textShadow: '0 0 20px #a5b4fc' }}>
+                {diceAnim.phase === 'rolling' ? '?' : diceAnim.value}
+              </span>
+              {/* Die dots decoration */}
+              <div className="absolute top-2 left-2 w-2 h-2 rounded-full bg-indigo-400/40" />
+              <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-indigo-400/40" />
+              <div className="absolute bottom-2 left-2 w-2 h-2 rounded-full bg-indigo-400/40" />
+              <div className="absolute bottom-2 right-2 w-2 h-2 rounded-full bg-indigo-400/40" />
+            </div>
+            <div className="text-indigo-300 text-sm font-bold tracking-wider bg-black/60 px-3 py-1 rounded-full border border-indigo-500/30">
+              {diceAnim.die.toUpperCase()}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
