@@ -76,28 +76,37 @@ export const XP_THRESHOLDS = [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 4800
 export const getExpToNext = (level: number): number =>
   level >= 10 ? 9999999 : XP_THRESHOLDS[level] - XP_THRESHOLDS[level - 1];
 
+// Евклидово расстояние в клетках: диагональ = √2 ≈ 1.414 клетки
+// (т.е. 2 клетки по диагонали = ~2.83 клетки, что даёт круглые радиусы)
+export const euclideanDist = (x1: number, y1: number, x2: number, y2: number) =>
+  Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+
+// Расстояние в футах через евклидово (диагональ считается как √2 клетки)
+export const distFeet = (x1: number, y1: number, x2: number, y2: number) =>
+  euclideanDist(x1, y1, x2, y2) * CELL_FT;
+
+// Оставляем chebyshevDist для AI-движения (шаг-за-шагом)
 export const chebyshevDist = (x1: number, y1: number, x2: number, y2: number) =>
   Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-
-export const distFeet = (x1: number, y1: number, x2: number, y2: number) =>
-  chebyshevDist(x1, y1, x2, y2) * CELL_FT;
 
 export const getReachable = (
   fromX: number, fromY: number,
   moveFt: number,
   grid: GridCell[][]
 ): { x: number; y: number }[] => {
-  const budget = Math.floor(moveFt / CELL_FT);
+  const budget = moveFt / CELL_FT; // в клетках (дробное)
+  const maxGrid = Math.ceil(budget);
   const result: { x: number; y: number }[] = [];
-  for (let dx = -budget; dx <= budget; dx++) {
-    for (let dy = -budget; dy <= budget; dy++) {
+  for (let dx = -maxGrid; dx <= maxGrid; dx++) {
+    for (let dy = -maxGrid; dy <= maxGrid; dy++) {
       const x = fromX + dx, y = fromY + dy;
       if (x < 0 || x >= GRID_COLS || y < 0 || y >= GRID_ROWS) continue;
       if (x === fromX && y === fromY) continue;
       const cell = grid[y]?.[x];
       if (!cell || cell.terrain === 'blocked') continue;
-      const steps = Math.max(Math.abs(dx), Math.abs(dy));
-      const cost = cell.terrain === 'difficult' ? steps * 2 : steps;
+      // Евклидово расстояние (диагональ ≈ 1.414 клетки)
+      const dist = euclideanDist(fromX, fromY, x, y);
+      const cost = cell.terrain === 'difficult' ? dist * 2 : dist;
       if (cost <= budget) result.push({ x, y });
     }
   }
@@ -109,14 +118,16 @@ export const getTargetable = (
   rangeFt: number,
   grid: GridCell[][]
 ): { x: number; y: number }[] => {
-  const maxCells = Math.ceil(rangeFt / CELL_FT);
+  const maxDist = rangeFt / CELL_FT; // в клетках (дробное)
+  const maxGrid = Math.ceil(maxDist);
   const result: { x: number; y: number }[] = [];
-  for (let dx = -maxCells; dx <= maxCells; dx++) {
-    for (let dy = -maxCells; dy <= maxCells; dy++) {
+  for (let dx = -maxGrid; dx <= maxGrid; dx++) {
+    for (let dy = -maxGrid; dy <= maxGrid; dy++) {
       const x = fromX + dx, y = fromY + dy;
       if (x < 0 || x >= GRID_COLS || y < 0 || y >= GRID_ROWS) continue;
       if (dx === 0 && dy === 0) continue;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) <= maxCells) result.push({ x, y });
+      // Круглый радиус через евклидово расстояние
+      if (euclideanDist(fromX, fromY, x, y) <= maxDist) result.push({ x, y });
     }
   }
   return result;

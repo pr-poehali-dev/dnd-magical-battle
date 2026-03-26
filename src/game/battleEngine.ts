@@ -4,7 +4,7 @@ import {
 } from './types';
 import {
   attackRoll20, savingThrow20, rollDice, rollDoubled, rollDie, rollDieN,
-  getModifier, getReachable, getTargetable, distFeet, chebyshevDist,
+  getModifier, getReachable, getTargetable, distFeet, chebyshevDist, euclideanDist,
   generateForestGrid
 } from './dndUtils';
 
@@ -82,7 +82,11 @@ const applyDamage = (target: Character | Enemy, dmg: number): Character | Enemy 
     rem -= abs;
   }
   const newHp = Math.max(0, target.hp - rem);
-  return { ...target, hp: newHp, tempHp, isUnconscious: newHp <= 0, isDead: newHp <= 0 };
+  const unconscious = newHp <= 0;
+  // Враги умирают сразу; игроки (Character) только теряют сознание — смерть через спасбросок
+  const isChar = 'class' in target;
+  const isDead = unconscious && !isChar;
+  return { ...target, hp: newHp, tempHp, isUnconscious: unconscious, isDead };
 };
 
 const applyHeal = (target: Character | Enemy, amt: number): Character | Enemy => ({
@@ -134,6 +138,12 @@ export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: n
   const unit = getUnitById(state, unitId);
   if (!unit) return state;
 
+  // Нельзя двигаться если уже атаковал в этот ход (action использован на атаку)
+  // Признак: действие использовано (hasAction=false) — движение запрещено
+  if (!unit.data.hasAction && unit.kind === 'player') {
+    return { ...state, log: [...state.log, mkLog(`❌ Нельзя двигаться после атаки!`, 'info')].slice(-LOG_MAX) };
+  }
+
   const { data } = unit;
   const cell = state.grid[toY]?.[toX];
   if (!cell) return state;
@@ -149,7 +159,7 @@ export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: n
   );
   if (occupied) return state;
 
-  const dist = chebyshevDist(data.gridX, data.gridY, toX, toY);
+  const dist = euclideanDist(data.gridX, data.gridY, toX, toY);
   const ftCost = (cell.terrain === 'difficult' ? dist * 2 : dist) * CELL_FT;
   if (ftCost > data.movementLeft) return state;
 
@@ -176,9 +186,9 @@ export const doInfinityStep = (state: BattleState, unitId: string, targetId: str
   const target = getUnitById(state, targetId);
   if (!unit || !target || !unit.data.hasBonusAction) return state;
 
-  const dist = chebyshevDist(unit.data.gridX, unit.data.gridY, target.data.gridX, target.data.gridY);
+  const dist = euclideanDist(unit.data.gridX, unit.data.gridY, target.data.gridX, target.data.gridY);
   if (dist > 5) {
-    return { ...state, log: [...state.log, mkLog(`❌ Цель слишком далеко для Infinity Step (>${5} кл)`, 'info')].slice(-LOG_MAX) };
+    return { ...state, log: [...state.log, mkLog(`❌ Цель слишком далеко для Infinity Step (радиус 5 клеток)`, 'info')].slice(-LOG_MAX) };
   }
 
   // Teleport adjacent to target
@@ -206,6 +216,12 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   const atk = attacker.data;
   const tgt = targetUnit.data;
 
+  // Нельзя атаковать если уже двигался в этот ход (только для игроков, не реакции/бонус)
+  const hasMoved = atk.movementLeft < atk.speed;
+  if (hasMoved && attacker.kind === 'player' && skill.actionCost === 'action') {
+    return { ...state, log: [...state.log, mkLog(`❌ Нельзя атаковать после движения!`, 'info')].slice(-LOG_MAX) };
+  }
+
   // Range check
   const distFt = distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY);
   // Range check: melee = exactly 5 ft (adjacent), ranged = up to skill.range ft
@@ -216,6 +232,10 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
 
   // ── Lapse Blue: pull enemy to attacker, damage, then push 5 cells ─────────
   if (skill.id === 'lapse_blue') {
+    // Проверка: нельзя атаковать после движения
+    if (atk.movementLeft < atk.speed && attacker.kind === 'player') {
+      return { ...state, log: [...state.log, mkLog(`❌ Нельзя атаковать после движения!`, 'info')].slice(-LOG_MAX) };
+    }
     const actionPatch2: Partial<Character & Enemy> = { hasAction: false };
     let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch2 } as typeof u.data }));
     const blueLogs: BattleLog[] = [];
@@ -590,37 +610,41 @@ export const doCatchBreath = (state: BattleState, unitId: string): BattleState =
   return { ...newState, log: [...state.log, ...logs].slice(-LOG_MAX) };
 };
 
-/** Death save: d20 vs DC10 */
+/** Death save: один бросок к20 за всю битву. DC10 = встаёт с 1 HP, крит 20 = 2 HP. */
 export const doDeathSave = (state: BattleState, unitId: string): BattleState => {
   const unit = getUnitById(state, unitId);
   if (!unit || !unit.data.isUnconscious) return state;
 
+  // Проверяем, не использован ли уже бросок за эту битву
+  const alreadyUsed = unit.data.deathSaves.successes > 0 || unit.data.deathSaves.failures > 0;
+  if (alreadyUsed) {
+    return { ...state, log: [...state.log, mkLog(`❌ ${unit.data.name} уже использовал спасбросок от смерти в этой битве!`, 'info')].slice(-LOG_MAX) };
+  }
+
   const roll = rollDieN(20);
-  const logs: BattleLog[] = [mkLog(`💀 Спасбросок от смерти [${roll}]`, 'save', { rolls: [roll], total: roll, mod: 0, die: 'd20' })];
-  let { successes, failures } = unit.data.deathSaves;
+  const logs: BattleLog[] = [mkLog(`💀 ${unit.data.name} бросает к20 от смерти: [${roll}] vs СЛ10`, 'save', { rolls: [roll], total: roll, mod: 0, die: 'd20' })];
 
   let newHp = 0;
   let isUnconscious = true;
   let isDead = false;
+  // successes=1 = попытка использована (чтобы заблокировать повторный бросок)
+  const successes = 1;
+  let failures = 0;
 
   if (roll === 20) {
     newHp = 2;
     isUnconscious = false;
-    successes = 0; failures = 0;
-    logs.push(mkLog('🌟 20! Встаёт с 2 HP!', 'special'));
-  } else if (roll === 1) {
-    failures += 2;
-    logs.push(mkLog('❌ 1 — два провала!', 'death'));
+    logs.push(mkLog(`🌟 КРИТ 20! ${unit.data.name} встаёт с 2 HP!`, 'special'));
   } else if (roll >= 10) {
-    successes += 1;
-    logs.push(mkLog(`✅ Успех ${successes}/3`, 'heal'));
+    newHp = 1;
+    isUnconscious = false;
+    logs.push(mkLog(`✅ Успех! ${unit.data.name} встаёт с 1 HP!`, 'heal'));
   } else {
-    failures += 1;
-    logs.push(mkLog(`❌ Провал ${failures}/3`, 'death'));
+    isDead = true;
+    isUnconscious = true;
+    failures = 1;
+    logs.push(mkLog(`☠ Провал! ${unit.data.name} погибает!`, 'death'));
   }
-
-  if (successes >= 3) { newHp = 1; isUnconscious = false; successes = 0; failures = 0; logs.push(mkLog('💚 Стабилизировался с 1 HP!', 'heal')); }
-  if (failures >= 3) { isDead = true; isUnconscious = true; logs.push(mkLog(`☠ ${unit.data.name} мёртв!`, 'death')); }
 
   const newState = updateUnit(state, unitId, u => ({
     ...u, data: { ...u.data, hp: newHp, isUnconscious, isDead, deathSaves: { successes, failures } } as typeof u.data

@@ -123,10 +123,7 @@ export default function CharacterSelect({ onSelect, onBack, title = 'Выбор 
                     ))}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl border border-yellow-900/30 bg-yellow-500/5">
-                  <div className="text-yellow-400 text-xs font-black uppercase mb-1">⭐ Пассивная способность</div>
-                  <div className="text-yellow-200 text-sm">{selected.passiveBonus}</div>
-                </div>
+
               </div>
             )}
 
