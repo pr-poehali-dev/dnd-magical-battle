@@ -178,8 +178,10 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
 
   // Range check
   const distFt = distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY);
-  if (distFt > skill.range + 5 && !skill.aoe) {
-    return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${skill.range + 5} фут.)`, 'info')].slice(-30) };
+  // Range check: melee = exactly 5 ft (adjacent), ranged = up to skill.range ft
+  const maxRange = skill.range; // range is exact, no bonus
+  if (distFt > maxRange && !skill.aoe) {
+    return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${maxRange} фут.)`, 'info')].slice(-30) };
   }
 
   // Consume action
@@ -638,32 +640,51 @@ export const runEnemyTurn = (state: BattleState): BattleState => {
   let newState = state;
   const target = nearest;
 
-  // Move towards target
-  const dist = distFeet(enemy.gridX, enemy.gridY, target.data.gridX, target.data.gridY);
-  if (dist > 10) {
-    const dx = Math.sign(target.data.gridX - enemy.gridX);
-    const dy = Math.sign(target.data.gridY - enemy.gridY);
-    const nx = enemy.gridX + dx, ny = enemy.gridY + dy;
-    const cell = state.grid[ny]?.[nx];
-    const occupied = state.units.some(u => u.data.gridX === nx && u.data.gridY === ny && !u.data.isUnconscious);
-    if (cell && cell.terrain !== 'blocked' && !occupied) {
-      newState = moveUnit(newState, enemy.id, nx, ny);
-    }
-  }
-
-  // Pick skill — support both Enemy.skills and Character.unlockedSkills
-  const enemySkillPool: Skill[] = (enemy as Enemy).skills
-    ?? ((cur.data as unknown as { unlockedSkills: Skill[] }).unlockedSkills)
-    ?? [];
+  // Pick skill first to know required range
+  const enemySkillPool: Skill[] = (enemy as Enemy).skills?.length
+    ? (enemy as Enemy).skills
+    : ((cur.data as unknown as { unlockedSkills: Skill[] }).unlockedSkills ?? []);
   if (enemySkillPool.length === 0) return endTurn(newState);
   const available = enemySkillPool.filter(s => s.currentCooldown === 0 && s.actionCost === 'action');
   const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : enemySkillPool[0];
+
+  // Move towards target until within skill range
+  // Use all movement budget step by step
+  const movesLeft = Math.floor(enemy.movementLeft / CELL_FT);
+  for (let step = 0; step < movesLeft; step++) {
+    const curEn = getUnitById(newState, enemy.id)?.data ?? enemy;
+    const curDist = distFeet(curEn.gridX, curEn.gridY, target.data.gridX, target.data.gridY);
+    if (curDist <= skill.range) break; // already in range
+
+    const dx = Math.sign(target.data.gridX - curEn.gridX);
+    const dy = Math.sign(target.data.gridY - curEn.gridY);
+
+    // Try diagonal, then cardinal directions
+    const candidates = [
+      { x: curEn.gridX + dx, y: curEn.gridY + dy },
+      { x: curEn.gridX + dx, y: curEn.gridY },
+      { x: curEn.gridX,      y: curEn.gridY + dy },
+    ];
+
+    let moved = false;
+    for (const cand of candidates) {
+      if (cand.x < 0 || cand.x >= GRID_COLS || cand.y < 0 || cand.y >= GRID_ROWS) continue;
+      const cell = newState.grid[cand.y]?.[cand.x];
+      if (!cell || cell.terrain === 'blocked') continue;
+      const occupied = newState.units.some(u => u.data.id !== enemy.id && u.data.gridX === cand.x && u.data.gridY === cand.y && !u.data.isUnconscious);
+      if (occupied) continue;
+      newState = moveUnit(newState, enemy.id, cand.x, cand.y);
+      moved = true;
+      break;
+    }
+    if (!moved) break;
+  }
 
   const curEnemy = getUnitById(newState, enemy.id);
   if (!curEnemy || !curEnemy.data.hasAction) return endTurn(newState);
 
   const distNow = distFeet(curEnemy.data.gridX, curEnemy.data.gridY, target.data.gridX, target.data.gridY);
-  if (distNow <= skill.range + 5 || skill.aoe) {
+  if (distNow <= skill.range || skill.aoe) {
     newState = executeAttack(newState, enemy.id, skill, target.data.id);
   }
 

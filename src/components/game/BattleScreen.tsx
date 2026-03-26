@@ -266,7 +266,13 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number } | null>(null);
   const [jumpMode, setJumpMode] = useState(false);
   // Pending Manji Kick reaction
-  const [pendingReaction, setPendingReaction] = useState<{ attackerId: string; skillId: string } | null>(null);
+  const [pendingReaction, setPendingReaction] = useState<{
+    attackerId: string;
+    skillId: string;
+    stateWithDamage: BattleState;
+    playerHpBefore: number;
+    playerId: string;
+  } | null>(null);
 
   const battleRef = useRef(battleState);
   battleRef.current = battleState;
@@ -404,37 +410,45 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     setProcessing(true);
     const t = setTimeout(() => {
       const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
+      const stateBeforeAttack = battleState; // snapshot before enemy acts
       const next = runEnemyTurn(battleState);
 
-      // Check if enemy attacked a melee player who has Manji Kick ready
-      const enemyUnit = battleState.units.find(u => u.data.id === curUnit.data.id);
+      // Check if enemy dealt melee damage to a player who has Manji Kick ready
+      // Use ORIGINAL positions (before move) to determine if attack was melee
+      const enemyUnitAfter = next.units.find(u => u.data.id === curUnit.data.id);
       const attackedPlayerUnit = next.units.find(u => {
         const prev = prevHps.get(u.data.id);
         return u.teamId === 0 && prev !== undefined && u.data.hp < prev;
       });
 
-      if (attackedPlayerUnit && enemyUnit) {
-        const dist = Math.max(
-          Math.abs(enemyUnit.data.gridX - attackedPlayerUnit.data.gridX),
-          Math.abs(enemyUnit.data.gridY - attackedPlayerUnit.data.gridY)
+      if (attackedPlayerUnit && enemyUnitAfter) {
+        // Check distance AFTER enemy moved (that's where the attack came from)
+        const distCells = Math.max(
+          Math.abs(enemyUnitAfter.data.gridX - attackedPlayerUnit.data.gridX),
+          Math.abs(enemyUnitAfter.data.gridY - attackedPlayerUnit.data.gridY)
         );
-        // Manji Kick reaction check: dist <= 1 (melee), skill available, has reaction
-        if (dist <= 1 && attackedPlayerUnit.kind === 'player') {
+        if (distCells <= 1 && attackedPlayerUnit.kind === 'player') {
           const playerChar = attackedPlayerUnit.data;
-          const manjiKick = playerChar.unlockedSkills?.find(s => s.id === 'manji_kick' && s.currentCooldown === 0);
+          const manjiKick = playerChar.unlockedSkills?.find(
+            s => s.id === 'manji_kick' && s.currentCooldown === 0
+          );
           if (manjiKick && playerChar.hasReaction) {
             flash(curUnit.data.id, 'attack', 300);
-            flash(attackedPlayerUnit.data.id, 'hit', 300);
-            // Offer reaction
-            setPendingReaction({ attackerId: enemyUnit.data.id, skillId: manjiKick.id });
-            onBattleUpdate(next);
+            // Show reaction prompt — pass `next` state but mark that damage should be cancelled
+            // We store prev HP so we can restore it if player uses reaction
+            setPendingReaction({
+              attackerId: enemyUnitAfter.data.id,
+              skillId: manjiKick.id,
+              stateWithDamage: next,
+              playerHpBefore: prevHps.get(attackedPlayerUnit.data.id) ?? attackedPlayerUnit.data.hp,
+              playerId: attackedPlayerUnit.data.id,
+            });
             setProcessing(false);
             return;
           }
         }
       }
 
-      // Normal flow: play attack anim on attacker, hit on targets
       flash(curUnit.data.id, 'attack', 280);
       next.units.forEach(u => {
         const prev = prevHps.get(u.data.id);
@@ -510,30 +524,50 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   // ── Manji Kick reaction handler ───────────────────────────────────────────────
   const handleManjiReaction = (use: boolean) => {
     if (!pendingReaction) return;
-    const state = battleRef.current;
+    const { stateWithDamage, playerHpBefore, playerId, attackerId } = pendingReaction;
     setPendingReaction(null);
 
     if (!use) {
-      // Skip reaction - move to next turn
-      onBattleUpdate(endTurn(state));
+      // Player accepts the hit — apply damage normally
+      flash(playerId, 'hit', 400);
+      onBattleUpdate(endTurn(stateWithDamage));
       return;
     }
 
-    // Find player and attacker
-    const playerUnit = state.units.find(u => u.teamId === 0 && !u.data.isUnconscious && u.kind === 'player');
+    // Player DODGES — restore HP before damage, then counter
+    // Restore player HP (dodge = no damage)
+    const dodgedState: BattleState = {
+      ...stateWithDamage,
+      units: stateWithDamage.units.map(u =>
+        u.data.id === playerId
+          ? { ...u, data: { ...u.data, hp: playerHpBefore, hasReaction: false } as typeof u.data }
+          : u
+      ),
+      log: [...stateWithDamage.log, {
+        id: String(Date.now()),
+        text: `⚡ Manji Kick! ${stateWithDamage.units.find(u => u.data.id === playerId)?.data.name} уклоняется — урон отменён!`,
+        type: 'special' as const,
+      }],
+    };
+
+    // Find player and manji kick skill
+    const playerUnit = dodgedState.units.find(u => u.data.id === playerId);
     const sk = playerUnit?.kind === 'player'
       ? playerUnit.data.unlockedSkills?.find(s => s.id === 'manji_kick')
       : null;
 
-    if (!playerUnit || !sk) { onBattleUpdate(endTurn(state)); return; }
+    flash(playerId, 'dodge', 450);
+    setTimeout(() => flash(playerId, 'attack', 320), 350);
+    setTimeout(() => flash(attackerId, 'hit', 350), 500);
 
-    flash(playerUnit.data.id, 'dodge', 400);
-    setTimeout(() => flash(playerUnit.data.id, 'attack', 300), 300);
+    if (!playerUnit || !sk) {
+      onBattleUpdate(endTurn(dodgedState));
+      return;
+    }
 
-    // Execute counter attack
-    const next = executeAttack(state, playerUnit.data.id, sk, pendingReaction.attackerId);
-    flash(pendingReaction.attackerId, 'hit', 400);
-    onBattleUpdate(endTurn(next));
+    // Counter attack
+    const counterState = executeAttack(dodgedState, playerId, sk, attackerId);
+    onBattleUpdate(endTurn(counterState));
   };
 
   const handleSkillClick = (sk: Skill) => {
