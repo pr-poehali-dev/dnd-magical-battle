@@ -17,6 +17,7 @@ const base = (overrides: Partial<Enemy>): Enemy => ({
   hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: 30,
   deathSaves: { successes: 0, failures: 0 },
   isUnconscious: false, isDead: false,
+  onTree: false,
   gridX: 12, gridY: 5,
   attack: 4, challengeRating: 1,
   skills: [], exp: 50, loot: [], description: '',
@@ -80,5 +81,5 @@ export const ENEMIES: Record<string, Enemy> = {
 
 export const getEnemyById = (id: string): Enemy => {
   const base = ENEMIES[id] ?? ENEMIES['small_curse'];
-  return { ...base, hp: base.maxHp, tempHp: 0, statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: base.speed, isUnconscious: false, isDead: false, deathSaves: { successes: 0, failures: 0 }, gridX: 12, gridY: 5, currentCooldown: 0 } as Enemy;
+  return { ...base, hp: base.maxHp, tempHp: 0, statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: base.speed, isUnconscious: false, isDead: false, onTree: false, deathSaves: { successes: 0, failures: 0 }, gridX: 12, gridY: 5, currentCooldown: 0 } as Enemy;
 };

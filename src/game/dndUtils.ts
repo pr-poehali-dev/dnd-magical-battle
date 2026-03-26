@@ -129,17 +129,24 @@ export const generateForestGrid = (): GridCell[][] => {
     for (let x = 0; x < GRID_COLS; x++) {
       const r = Math.random();
       let terrain: TerrainType = 'open';
-      let prop: string | undefined;
+      let prop: GridCell['prop'];
+      let treeHp: number | undefined;
       const variant = Math.floor(Math.random() * 4);
-      const isPlayerZone = x <= 2 && y >= 4 && y <= 6;
-      const isEnemyZone = x >= GRID_COLS - 3 && y >= 4 && y <= 6;
+      // Clear spawn zones
+      const isPlayerZone = x <= 3 && y >= 3 && y <= 7;
+      const isEnemyZone  = x >= GRID_COLS - 4 && y >= 3 && y <= 7;
       if (!isPlayerZone && !isEnemyZone) {
-        if (r < 0.13) { terrain = 'blocked'; prop = 'tree'; }
-        else if (r < 0.22) { terrain = 'difficult'; prop = 'bush'; }
-        else if (r < 0.25) { terrain = 'cover'; prop = 'rock'; }
-        else if (r < 0.27) { terrain = 'difficult'; prop = 'water'; }
+        if (r < 0.14) {
+          // Trees: open terrain (can enter), has HP, gives disadvantage
+          terrain = 'open';
+          prop = 'tree';
+          treeHp = 3;
+        } else if (r < 0.18) {
+          terrain = 'cover';
+          prop = 'rock';
+        }
       }
-      row.push({ x, y, terrain, prop, tileVariant: variant });
+      row.push({ x, y, terrain, prop, tileVariant: variant, treeHp });
     }
     grid.push(row);
   }

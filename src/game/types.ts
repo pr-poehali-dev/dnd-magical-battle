@@ -103,6 +103,8 @@ export interface Combatant {
   deathSaves: { successes: number; failures: number };
   isUnconscious: boolean;
   isDead: boolean;
+  /** currently on top of a tree */
+  onTree: boolean;
 }
 
 // ─── CHARACTER ─────────────────────────────────────────────────────────────
@@ -157,10 +159,12 @@ export interface GridCell {
   x: number;
   y: number;
   terrain: TerrainType;
-  /** 'tree' | 'rock' | 'bush' | 'water' | ... */
-  prop?: string;
+  /** 'tree' | 'rock' | undefined */
+  prop?: 'tree' | 'rock';
   /** ground variant: 0-3 for tile variety */
   tileVariant: number;
+  /** tree health: 0 = destroyed, undefined = no tree */
+  treeHp?: number;
 }
 
 // ─── ACTION TYPES ──────────────────────────────────────────────────────────
@@ -220,6 +224,8 @@ export interface BattleState {
   targetableCells: { x: number; y: number }[];
 
   disengage: Set<string>; // unit IDs that used Disengage this turn
+  /** unit IDs currently ON TOP of a tree (jumped up) */
+  unitsOnTree: Set<string>;
   pendingReaction?: {
     unitId: string;
     skill: Skill;

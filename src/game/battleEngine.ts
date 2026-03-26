@@ -48,6 +48,7 @@ export const initBattle = (
     reachableCells: [],
     targetableCells: [],
     disengage: new Set(),
+    unitsOnTree: new Set(),
     winTeam: undefined,
   };
 };
@@ -98,6 +99,34 @@ const checkWin = (units: BattleUnit[]): 0 | 1 | null => {
 const hasStatusEffect = (unit: BattleUnit, type: StatusEffect['type']) =>
   unit.data.statusEffects.some(e => e.type === type);
 
+// ─── TREE HELPERS ──────────────────────────────────────────────────────────
+export const TREE_HP = 3; // hits to destroy a tree
+
+const isTreeCell = (cell: GridCell | undefined): boolean =>
+  !!cell && cell.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0;
+
+/** Check if a unit is in/on a tree cell */
+const unitInTree = (state: BattleState, unitId: string): boolean => {
+  const u = getUnitById(state, unitId);
+  if (!u) return false;
+  const cell = state.grid[u.data.gridY]?.[u.data.gridX];
+  return isTreeCell(cell);
+};
+
+/** Damage a tree cell, returns new grid */
+const damageTree = (grid: GridCell[][], x: number, y: number): GridCell[][] => {
+  const newGrid = grid.map(row => row.map(c => ({ ...c })));
+  const cell = newGrid[y]?.[x];
+  if (!cell || cell.prop !== 'tree') return newGrid;
+  const hp = (cell.treeHp ?? TREE_HP) - 1;
+  if (hp <= 0) {
+    newGrid[y][x] = { ...cell, terrain: 'open', prop: undefined, treeHp: 0 };
+  } else {
+    newGrid[y][x] = { ...cell, treeHp: hp };
+  }
+  return newGrid;
+};
+
 // ─── MOVE ──────────────────────────────────────────────────────────────────
 export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: number): BattleState => {
   const unit = getUnitById(state, unitId);
@@ -105,29 +134,34 @@ export const moveUnit = (state: BattleState, unitId: string, toX: number, toY: n
 
   const { data } = unit;
   const cell = state.grid[toY]?.[toX];
-  if (!cell || cell.terrain === 'blocked') return state;
-  // Can't move to occupied cell
-  if (state.units.some(u => u.data.gridX === toX && u.data.gridY === toY && !u.data.isUnconscious)) return state;
+  if (!cell) return state;
+
+  // Trees can be entered normally (unit hides in foliage, gains/causes disadvantage)
+  // onTree = jumped ON TOP (doJump with treeX/treeY); entering normally is just walking into the tree cell
+
+  // Can't move to cell occupied by another upright unit
+  const occupied = state.units.some(u =>
+    u.data.id !== unitId &&
+    u.data.gridX === toX && u.data.gridY === toY &&
+    !u.data.isUnconscious && !u.data.onTree
+  );
+  if (occupied) return state;
 
   const dist = chebyshevDist(data.gridX, data.gridY, toX, toY);
   const ftCost = (cell.terrain === 'difficult' ? dist * 2 : dist) * CELL_FT;
-
   if (ftCost > data.movementLeft) return state;
 
-  // Hazard damage
-  let extraLog: BattleLog[] = [];
-  let newData = { ...data, gridX: toX, gridY: toY, movementLeft: data.movementLeft - ftCost };
-  if (cell.terrain === 'hazard') {
-    const dmg = 1;
-    newData = applyDamage(newData, dmg) as typeof newData;
-    extraLog = [mkLog(`${data.name} наступает на опасную зону! ${dmg} урона`, 'system')];
-  }
+  const newData = { ...data, gridX: toX, gridY: toY, movementLeft: data.movementLeft - ftCost, onTree: false };
+  const anims = [mkAnim('move', unitId, 300, { fromX: data.gridX, fromY: data.gridY, toX, toY })];
 
-  const anims = [mkAnim('move', unitId, 200, { fromX: data.gridX, fromY: data.gridY, toX, toY })];
+  // If leaving a tree cell, remove from onTree set
+  const newOnTree = new Set(state.unitsOnTree);
+  newOnTree.delete(unitId);
 
   return {
     ...updateUnit(state, unitId, u => ({ ...u, data: newData as typeof u.data })),
-    log: [...state.log, mkLog(`${data.name} перемещается (осталось ${newData.movementLeft} фут.)`, 'info'), ...extraLog].slice(-30),
+    unitsOnTree: newOnTree,
+    log: [...state.log, mkLog(`${data.name} перемещается (осталось ${newData.movementLeft} фут.)`, 'info')].slice(-30),
     animQueue: [...state.animQueue, ...anims],
     reachableCells: getReachable(toX, toY, newData.movementLeft, state.grid),
   };
@@ -160,12 +194,22 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   const anims: AnimEvent[] = [mkAnim('attack', attackerId, 250, { toX: tgt.gridX, toY: tgt.gridY, skillName: skill.name })];
 
   // Advantage / disadvantage
-  const inTree = (unit: BattleUnit) => {
-    const cell = state.grid[unit.data.gridY]?.[unit.data.gridX];
-    return cell?.prop === 'tree' || cell?.prop === 'bush';
+  // Tree rule: attacker OR target standing in tree = disadvantage (они на дереве = помеха для атак и против них)
+  const unitCellIsTree = (u: BattleUnit) => {
+    const cell = state.grid[u.data.gridY]?.[u.data.gridX];
+    return !!(cell && cell.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0);
   };
-  const atkInTree = inTree(attacker);
-  const tgtInTree = inTree(targetUnit);
+  const atkInTree = unitCellIsTree(attacker);
+  const tgtInTree = unitCellIsTree(targetUnit);
+  // Unit ON TOP of tree can't attack unless target is also on that tree or special case
+  const atkOnTree = state.unitsOnTree.has(attackerId);
+  const tgtOnTree = state.unitsOnTree.has(targetId);
+  if (atkOnTree && !tgtOnTree) {
+    // On tree and can't attack ground units unless AoE reaches
+    if (!skill.aoe) {
+      return { ...state, log: [...state.log, mkLog(`❌ ${atk.name} на дереве — не может атаковать наземные цели!`, 'info')].slice(-30) };
+    }
+  }
   const hasAdv = hasStatusEffect(attacker, 'advantage_atk');
   const hasDisAdv = hasStatusEffect(attacker, 'disadvantage_atk') || atkInTree || tgtInTree;
 
@@ -279,9 +323,31 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
     });
   }
 
+  // Tree damage: if target is in a tree, hitting the tree damages it too
+  let finalGrid = newState.grid;
+  const tgtCell = state.grid[tgt.gridY]?.[tgt.gridX];
+  if (tgtCell?.prop === 'tree' && (tgtCell.treeHp ?? TREE_HP) > 0) {
+    finalGrid = damageTree(newState.grid, tgt.gridX, tgt.gridY);
+    const newTreeHp = (finalGrid[tgt.gridY]?.[tgt.gridX]?.treeHp ?? 0);
+    if (newTreeHp <= 0) {
+      logs.push(mkLog(`🌲💥 Дерево разрушено!`, 'special'));
+      // Eject anyone on tree
+      const newOnTree = new Set(newState.unitsOnTree);
+      newState.units.forEach(u => {
+        if (u.data.gridX === tgt.gridX && u.data.gridY === tgt.gridY) {
+          newOnTree.delete(u.data.id);
+        }
+      });
+      newState = { ...newState, unitsOnTree: newOnTree };
+    } else {
+      logs.push(mkLog(`🌲 Дерево повреждено (${newTreeHp}/${TREE_HP} HP)`, 'system'));
+    }
+  }
+
   const winTeam = checkWin(newState.units);
   return {
     ...newState,
+    grid: finalGrid,
     log: [...state.log, ...logs].slice(-30),
     animQueue: [...state.animQueue, ...anims],
     phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
@@ -313,15 +379,42 @@ export const doDisengage = (state: BattleState, unitId: string): BattleState => 
   return { ...newState, disengage: newDisengage, log: [...state.log, mkLog(`${unit.data.name}: Отход — не провоцирует атаки!`, 'info')].slice(-30) };
 };
 
-/** Jump: bonus action, half movement */
-export const doJump = (state: BattleState, unitId: string): BattleState => {
+/** Jump: bonus action, costs half movement (does NOT add movement).
+ *  If toX/toY points to a tree cell — jump ON TOP of tree.
+ *  On a tree: can't attack ground, hidden, attacks against you with disadvantage.
+ */
+export const doJump = (state: BattleState, unitId: string, toX?: number, toY?: number): BattleState => {
   const unit = getUnitById(state, unitId);
   if (!unit || !unit.data.hasBonusAction) return state;
-  const half = Math.floor(unit.data.speed / 2);
+
+  const half = Math.floor(unit.data.movementLeft / 2);
+
+  // Jump onto a tree?
+  if (toX !== undefined && toY !== undefined) {
+    const cell = state.grid[toY]?.[toX];
+    if (cell && cell.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0) {
+      // Must be adjacent (within 5ft)
+      const dist = chebyshevDist(unit.data.gridX, unit.data.gridY, toX, toY);
+      if (dist > 1) return { ...state, log: [...state.log, mkLog(`❌ Слишком далеко для прыжка на дерево!`, 'info')].slice(-30) };
+
+      const newOnTree = new Set(state.unitsOnTree);
+      newOnTree.add(unitId);
+      const newState = updateUnit(state, unitId, u => ({
+        ...u, data: { ...u.data, hasBonusAction: false, movementLeft: half, gridX: toX, gridY: toY, onTree: true } as typeof u.data
+      }));
+      return {
+        ...newState, unitsOnTree: newOnTree,
+        log: [...state.log, mkLog(`🌲 ${unit.data.name} запрыгивает на дерево! Атаки по нему — с помехой.`, 'special')].slice(-30),
+        animQueue: [...state.animQueue, mkAnim('move', unitId, 250, { fromX: unit.data.gridX, fromY: unit.data.gridY, toX, toY })],
+      };
+    }
+  }
+
+  // Regular jump: costs half movement
   const newState = updateUnit(state, unitId, u => ({
-    ...u, data: { ...u.data, hasBonusAction: false, movementLeft: u.data.movementLeft + half } as typeof u.data
+    ...u, data: { ...u.data, hasBonusAction: false, movementLeft: half } as typeof u.data
   }));
-  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Прыжок (+${half} фут.)`, 'info')].slice(-30) };
+  return { ...newState, log: [...state.log, mkLog(`${unit.data.name}: Прыжок (движение уполовинено)`, 'info')].slice(-30) };
 };
 
 /** Push: bonus action, str contest */
@@ -374,10 +467,17 @@ export const doCallCola = (state: BattleState, unitId: string): BattleState => {
   return { ...newState, log: [...state.log, ...logs].slice(-30) };
 };
 
-/** Catch breath: action + bonus + movement, CON save DC14 */
+/** Catch breath: action + bonus + movement, CON save DC14.
+ *  Требует наличия хотя бы 1 ячейки (cursedEnergy > 0).
+ */
 export const doCatchBreath = (state: BattleState, unitId: string): BattleState => {
   const unit = getUnitById(state, unitId);
   if (!unit || !unit.data.hasAction || !unit.data.hasBonusAction) return state;
+  // Юджи (cursedEnergy = 0) не может использовать отдышку
+  const charData = unit.kind === 'player' ? unit.data : null;
+  if (charData && charData.maxCursedEnergy === 0) {
+    return { ...state, log: [...state.log, mkLog(`❌ ${charData.name} не имеет ячеек — отдышка недоступна!`, 'info')].slice(-30) };
+  }
 
   const score = unit.data.abilityScores.con;
   const roll = rollDieN(20);
@@ -508,6 +608,7 @@ export const endTurn = (state: BattleState): BattleState => {
     currentUnitIndex: nextIdx,
     round: newRound,
     disengage: newDisengage,
+    unitsOnTree: newState.unitsOnTree, // preserve across turns
     selectedSkill: null,
     movementMode: false,
     reachableCells: [],

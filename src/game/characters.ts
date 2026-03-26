@@ -52,11 +52,14 @@ const buildChar = (raw: {
     movementLeft: raw.speed,
     deathSaves: { successes: 0, failures: 0 },
     isUnconscious: false, isDead: false,
+    onTree: false,
     gridX: 2, gridY: 5,
   };
 };
 
 // ─── ИТАДОРИ ЮДЖИ (Vessel) ─────────────────────────────────────────────────
+// 0 ячеек заклинаний (cursedEnergy = 0) — отдышка недоступна
+// Все 4 способности открыты с 1 уровня
 const VESSEL = buildChar({
   id: 'vessel', class: 'vessel',
   name: 'Итадори Юджи', title: 'Сосуд', color: '#EF4444', glowColor: '#FF6666', spriteColor: '#EF4444',
@@ -65,22 +68,22 @@ const VESSEL = buildChar({
   passiveBonus: 'Стальное тело: спасброски от смерти с преимуществом',
   hitDie: 'd6', hpPerLevel: 12,
   scores: { str: 18, dex: 16, con: 16, int: 10, wis: 12, cha: 14 },
-  speed: 30, cursedEnergy: 0,
+  speed: 30,
+  cursedEnergy: 0, // нет ячеек — отдышка недоступна
   allSkills: [
-    // Уровень 1
-    sk('cursed_strikes', 'Cursed Strikes', 'Серия проклятых ударов кулаком',
+    sk('cursed_strikes', 'Cursed Strikes',
+      'Серия проклятых ударов кулаком. Базовая атака ближнего боя.',
       d(1,'d4'), 5, 'action', 0, 'cursed', 1),
-    sk('crushing_blow', 'Crushing Blow', 'Вбивает противника в землю',
+    sk('crushing_blow', 'Crushing Blow',
+      'Мощный удар, вбивающий противника в землю.',
       d(1,'d4'), 5, 'action', 0, 'physical', 1),
-    // Уровень 2
-    sk('divergent_fist', 'Divergent\'s Fist',
-      'При 18-20 на броске атаки срабатывает Чёрная Молния (1к6 вместо 1к2). При крите — бросается и 1к6 и 1к2.',
-      d(1,'d2'), 5, 'action', 0, 'cursed', 2,
+    sk('divergent_fist', "Divergent's Fist",
+      'Удар с задержкой проклятой энергии. При броске 18-20 на попадание — Чёрная Молния: урон 1к6 вместо 1к2. При крите — бросаются и 1к6, и 1к2.',
+      d(1,'d2'), 5, 'action', 0, 'cursed', 1,
       { blackFlash: { damageDice: d(1,'d6') } }),
-    // Уровень 3
     sk('manji_kick', 'Manji Kick',
-      'Реакция на ближнюю атаку по вам. Перезарядка 3 хода.',
-      d(1,'d2'), 5, 'reaction', 0, 'physical', 3,
+      'Реакция на ближнюю атаку противника. Перезарядка каждые 3 хода (в конце хода, когда не заряжена).',
+      d(1,'d2'), 5, 'reaction', 0, 'physical', 1,
       { reactionTrigger: 'melee_attack_received', cooldownRounds: 3 }),
   ],
 });
