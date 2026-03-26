@@ -3,7 +3,7 @@ import {
   BattleState, BattleUnit, Skill, GRID_COLS, GRID_ROWS, CELL_PX, GridCell, Character, Enemy
 } from '@/game/types';
 import {
-  moveUnit, executeAttack, doDash, doDisengage, doJump,
+  moveUnit, executeAttack, executeReversalRed, doDash, doDisengage, doJump,
   doCallCola, doCatchBreath, doDeathSave, endTurn, runEnemyTurn,
   getCurrentUnit, selectSkill, toggleMovement, TREE_HP, doInfinityStep
 } from '@/game/battleEngine';
@@ -597,12 +597,13 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
 
     if (battleState.selectedSkill) {
       const sk = battleState.selectedSkill;
-      const tgt = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
 
-      // Infinity Step — click any unit to teleport to them
+      // ── Infinity Step: телепортация только в пределах targetableCells ──
       if (sk.id === 'gojo_blink') {
-        const anyUnit = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
-        if (anyUnit && anyUnit.data.id !== curId) {
+        const inRange = battleState.targetableCells.some(c => c.x === cx && c.y === cy);
+        if (!inRange) return; // цель за радиусом — игнорируем клик
+        const anyUnit = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious && u.data.id !== curId);
+        if (anyUnit) {
           addSkillFx('blink', curUnit.data.gridX, curUnit.data.gridY, 500);
           addSkillFx('blink', cx, cy, 500);
           const next2 = doInfinityStep(battleState, curId, anyUnit.data.id);
@@ -611,26 +612,39 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
         return;
       }
 
-      if (tgt && tgt.teamId !== curUnit.teamId) {
-        if (battleState.targetableCells.some(c => c.x === cx && c.y === cy) || sk.aoe) {
-          flash(curId, 'attack', 350);
+      // ── Reversal Red: клик по любой клетке в зоне атаки (AOE по местности) ──
+      if (sk.id === 'reversal_red') {
+        const inRange = battleState.targetableCells.some(c => c.x === cx && c.y === cy);
+        if (!inRange) return;
+        flash(curId, 'attack', 350);
+        addSkillFx('red_explosion', cx, cy, 900);
+        const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
+        const next = executeReversalRed(battleState, curId, cx, cy);
+        const newLogs = next.log.slice(battleState.log.length);
+        const diceLog = newLogs.find(l => l.diceResult);
+        if (diceLog?.diceResult) showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
+        next.units.forEach(u => {
+          const p = prevHps.get(u.data.id);
+          if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 300);
+        });
+        onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [] });
+        return;
+      }
 
-          // Skill-specific FX
+      // ── Обычные атаки: клик по вражескому юниту ──
+      const tgt = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
+      if (tgt && tgt.teamId !== curUnit.teamId) {
+        if (battleState.targetableCells.some(c => c.x === cx && c.y === cy)) {
+          flash(curId, 'attack', 350);
           if (sk.id === 'lapse_blue') {
             addSkillFx('blue_wave', curUnit.data.gridX, curUnit.data.gridY, 800);
             setTimeout(() => addSkillFx('blue_wave', tgt.data.gridX, tgt.data.gridY, 600), 200);
-          } else if (sk.id === 'reversal_red') {
-            addSkillFx('red_explosion', cx, cy, 900);
           }
-
           const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
           const next = executeAttack(battleState, curId, sk, tgt.data.id);
-          // Show dice
           const newLogs = next.log.slice(battleState.log.length);
           const diceLog = newLogs.find(l => l.diceResult);
-          if (diceLog?.diceResult) {
-            showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
-          }
+          if (diceLog?.diceResult) showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
           next.units.forEach(u => {
             const p = prevHps.get(u.data.id);
             if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 300);

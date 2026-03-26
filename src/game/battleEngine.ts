@@ -218,7 +218,7 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
     return { ...state, log: [...state.log, mkLog(`❌ ${skill.name}: цель вне досягаемости (${distFt}/${maxRange} фут.)`, 'info')].slice(-LOG_MAX) };
   }
 
-  // ── Lapse Blue: pull enemy to attacker, damage, then push 5 cells ─────────
+  // ── Lapse Blue: 100% попадание, притягивает врага, бьёт, отбрасывает на 5 клеток ──
   if (skill.id === 'lapse_blue') {
     const actionPatch2: Partial<Character & Enemy> = { hasAction: false };
     let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, ...actionPatch2 } as typeof u.data }));
@@ -232,13 +232,13 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
     blueLogs.push(mkLog(`🔵 Lapse Blue! ${tgt.name} притянут к ${atk.name}!`, 'special'));
     blueAnims.push(mkAnim('move', targetId, 300, { fromX: tgt.gridX, fromY: tgt.gridY, toX: pullX, toY: pullY }));
 
-    // Saving throw CON DC10 — half dmg on success
+    // 100% попадание — только спасбросок ТЕЛ СЛ10 на половину урона
     const sv = savingThrow20(tgt.abilityScores.con, 10);
     const dmgRoll = rollDice(skill.damageDice);
     const fullDmg = dmgRoll.total;
     const finalDmg = sv.success ? Math.floor(fullDmg / 2) : fullDmg;
     blueLogs.push(mkLog(`🎲 Спасбросок ТЕЛ [${sv.roll}]+${getModifier(tgt.abilityScores.con)}=${sv.total} vs СЛ10 — ${sv.success ? 'УСПЕХ (пол урона)' : 'ПРОВАЛ'}`, 'save', { rolls: [sv.roll], total: sv.total, mod: getModifier(tgt.abilityScores.con), die: 'd20' }));
-    blueLogs.push(mkLog(`⚔ Blue удар: ${finalDmg} урона в ${tgt.name}`, 'hit', { rolls: dmgRoll.rolls, total: finalDmg, mod: 0, die: skill.damageDice.die }));
+    blueLogs.push(mkLog(`🔵 Blue удар (100%): ${finalDmg} урона → ${tgt.name}`, 'hit', { rolls: dmgRoll.rolls, total: finalDmg, mod: 0, die: skill.damageDice.die }));
     blueAnims.push(mkAnim('hit', targetId, 300));
 
     // Apply damage
@@ -259,7 +259,7 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
     blueLogs.push(mkLog(`💨 ${tgt.name} отброшен на 5 клеток!`, 'special'));
     blueAnims.push(mkAnim('move', targetId, 500, { fromX: fromPX, fromY: fromPY, toX: pushX, toY: pushY }));
 
-    if (damagedTgt.isDead) { blueLogs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death')); blueAnims.push(mkAnim('death', targetId, 400)); }
+    if (damagedTgt.isUnconscious) { blueLogs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death')); blueAnims.push(mkAnim('death', targetId, 400)); }
 
     const winT = checkWin(ns.units);
     return {
@@ -437,6 +437,92 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   return {
     ...newState,
     grid: finalGrid,
+    log: [...state.log, ...logs].slice(-LOG_MAX),
+    animQueue: [...state.animQueue, ...anims],
+    phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
+    winTeam: winTeam ?? undefined,
+  };
+};
+
+// ─── REVERSAL RED: AOE по клетке (100% попадание, деревья тоже ломаются) ──────
+export const executeReversalRed = (state: BattleState, attackerId: string, targetX: number, targetY: number): BattleState => {
+  const attacker = getUnitById(state, attackerId);
+  if (!attacker || !attacker.data.hasAction) return state;
+
+  const atk = attacker.data;
+  const skill = (attacker.kind === 'player'
+    ? (atk as Character).unlockedSkills
+    : (atk as Enemy).skills
+  ).find(s => s.id === 'reversal_red');
+  if (!skill) return state;
+
+  // Range check до центра взрыва
+  const distFt = euclideanDist(atk.gridX, atk.gridY, targetX, targetY) * CELL_FT;
+  if (distFt > skill.range) {
+    return { ...state, log: [...state.log, mkLog(`❌ Reversal Red: точка вне досягаемости (${Math.round(distFt)}/${skill.range} фут.)`, 'info')].slice(-LOG_MAX) };
+  }
+
+  let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, hasAction: false } as typeof u.data }));
+  const logs: BattleLog[] = [mkLog(`🔴 Reversal Red! Взрыв в (${targetX},${targetY}) радиус 2 кл.`, 'special')];
+  const anims: AnimEvent[] = [mkAnim('attack', attackerId, 300, { toX: targetX, toY: targetY, skillName: 'Reversal Red' })];
+
+  const aoeR = skill.aoeRadius ?? 2;
+
+  // Повреждаем все юниты в радиусе (кроме атакующего)
+  ns.units.forEach(u => {
+    if (u.data.id === attackerId || u.data.isUnconscious) return;
+    const d = euclideanDist(u.data.gridX, u.data.gridY, targetX, targetY);
+    if (d > aoeR) return;
+
+    const tgt = u.data;
+    const sv = savingThrow20(tgt.abilityScores.dex, 10);
+    const dmgRoll = rollDice(skill.damageDice);
+    const finalDmg = sv.success ? Math.floor(dmgRoll.total / 2) : dmgRoll.total;
+    logs.push(mkLog(`🎲 ${tgt.name}: спасбросок ЛОВ [${sv.roll}]=${sv.total} vs СЛ10 — ${sv.success ? 'УСПЕХ (пол урона)' : 'ПРОВАЛ'}`, 'save', { rolls: [sv.roll], total: sv.total, mod: getModifier(tgt.abilityScores.dex), die: 'd20' }));
+    logs.push(mkLog(`🔴 Red взрыв (100%): ${finalDmg} урона → ${tgt.name}`, 'hit', { rolls: dmgRoll.rolls, total: finalDmg, mod: 0, die: skill.damageDice.die }));
+    const damaged = applyDamage(tgt, finalDmg);
+    ns = updateUnit(ns, u.data.id, uu => ({ ...uu, data: damaged as typeof uu.data }));
+    anims.push(mkAnim('hit', u.data.id, 300));
+    if (damaged.isUnconscious) {
+      logs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death'));
+      anims.push(mkAnim('death', u.data.id, 400));
+    }
+  });
+
+  // Ломаем деревья в радиусе
+  let finalGrid = ns.grid;
+  const newOnTree = new Set(ns.unitsOnTree);
+  for (let dy = -aoeR; dy <= aoeR; dy++) {
+    for (let dx = -aoeR; dx <= aoeR; dx++) {
+      const tx = targetX + dx, ty = targetY + dy;
+      if (tx < 0 || tx >= GRID_COLS || ty < 0 || ty >= GRID_ROWS) continue;
+      if (euclideanDist(tx, ty, targetX, targetY) > aoeR) continue;
+      const cell = finalGrid[ty]?.[tx];
+      if (!cell || cell.prop !== 'tree' || (cell.treeHp ?? TREE_HP) <= 0) continue;
+      finalGrid = damageTree(finalGrid, tx, ty);
+      const newHp = finalGrid[ty]?.[tx]?.treeHp ?? 0;
+      if (newHp <= 0) {
+        logs.push(mkLog(`🌲💥 Дерево в (${tx},${ty}) уничтожено взрывом!`, 'special'));
+        ns.units.forEach(u => { if (u.data.gridX === tx && u.data.gridY === ty) newOnTree.delete(u.data.id); });
+      }
+    }
+  }
+
+  // Tick cooldown
+  ns = updateUnit(ns, attackerId, u => {
+    if (u.kind === 'player') {
+      const ch = u.data as Character;
+      const ticked = ch.unlockedSkills.map(s => s.id === 'reversal_red' ? { ...s, currentCooldown: s.cooldownRounds } : s);
+      return { ...u, data: { ...ch, unlockedSkills: ticked } as typeof u.data };
+    }
+    return u;
+  });
+
+  const winTeam = checkWin(ns.units);
+  return {
+    ...ns,
+    grid: finalGrid,
+    unitsOnTree: newOnTree,
     log: [...state.log, ...logs].slice(-LOG_MAX),
     animQueue: [...state.animQueue, ...anims],
     phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
