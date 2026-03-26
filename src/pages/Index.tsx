@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Character, BattleState, Item } from '@/game/types';
 import { CHARACTERS, applyLevelUp } from '@/game/characters';
 import { initBattle } from '@/game/battleEngine';
+import { getEnemyById } from '@/game/enemies';
 import { ITEMS } from '@/game/worldData';
 
 import MainMenu from '@/components/game/MainMenu';
@@ -25,15 +26,9 @@ export default function Index() {
   const handleSelectCharacter = (char: Character) => {
     setSelectedChar({ ...char });
     // Fight 2 weak enemies as first encounter
-    const enemies = [
-      { ...CHARACTERS.find(c => c.id === 'salaryman')!,
-        id: 'enemy_1', name: 'Проклятие-1', color: '#555', glowColor: '#888',
-        teamId: 1 as const, isUnconscious: false, isDead: false,
-        statusEffects: [], hasAction: true, hasBonusAction: true, hasReaction: true, movementLeft: 30,
-        gridX: 13, gridY: 4,
-      } as unknown as import('@/game/types').Enemy,
-    ];
-    const state = initBattle([{ ...char }], enemies as import('@/game/types').Enemy[]);
+    const enemy1 = { ...getEnemyById('medium_curse'), gridX: 12, gridY: 4 };
+    const enemy2 = { ...getEnemyById('small_curse'), gridX: 13, gridY: 6 };
+    const state = initBattle([{ ...char }], [enemy1, enemy2]);
     setBattleState(state);
     setScreen('battle');
   };

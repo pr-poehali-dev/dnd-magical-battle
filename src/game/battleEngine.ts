@@ -268,13 +268,14 @@ export const executeAttack = (state: BattleState, attackerId: string, skill: Ski
   // Tick skill cooldown on attacker
   if (skill.cooldownRounds > 0) {
     newState = updateUnit(newState, attackerId, u => {
-      const skills = (u.data as Character).unlockedSkills
-        ? (u.data as Character).unlockedSkills.map(s => s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s)
-        : (u.data as Enemy).skills.map(s => s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s);
-      if ((u.data as Character).unlockedSkills) {
-        return { ...u, data: { ...u.data, unlockedSkills: skills } as typeof u.data };
-      }
-      return { ...u, data: { ...u.data, skills } as typeof u.data };
+      const hasUnlocked = !!(u.data as Character).unlockedSkills;
+      const srcArr: Skill[] = hasUnlocked
+        ? ((u.data as Character).unlockedSkills ?? [])
+        : ((u.data as Enemy).skills ?? []);
+      const ticked = srcArr.map(s => s.id === skill.id ? { ...s, currentCooldown: s.cooldownRounds } : s);
+      return hasUnlocked
+        ? { ...u, data: { ...u.data, unlockedSkills: ticked } as typeof u.data }
+        : { ...u, data: { ...u.data, skills: ticked } as typeof u.data };
     });
   }
 
@@ -466,10 +467,15 @@ export const endTurn = (state: BattleState): BattleState => {
 
   // Tick skill cooldowns
   newState = updateUnit(newState, cur.data.id, u => {
+    const tickCd = (arr: Skill[] | undefined) => (arr ?? []).map(s => ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) }));
     if (u.kind === 'player') {
-      return { ...u, data: { ...u.data, unlockedSkills: u.data.unlockedSkills.map(s => ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) })) } as typeof u };
+      const ch = u.data as Character;
+      return { ...u, data: { ...ch, unlockedSkills: tickCd(ch.unlockedSkills) } as typeof u.data };
     }
-    return { ...u, data: { ...u.data, skills: u.data.skills.map(s => ({ ...s, currentCooldown: Math.max(0, s.currentCooldown - 1) })) } as typeof u };
+    const en = u.data as Enemy;
+    const skillsKey = en.skills ? 'skills' : 'unlockedSkills';
+    const skillArr = (en as unknown as Record<string, Skill[]>)[skillsKey] ?? [];
+    return { ...u, data: { ...en, [skillsKey]: tickCd(skillArr) } as typeof u.data };
   });
 
   // Advance turn
@@ -544,9 +550,13 @@ export const runEnemyTurn = (state: BattleState): BattleState => {
     }
   }
 
-  // Pick skill
-  const available = enemy.skills.filter(s => s.currentCooldown === 0 && (s.actionCost === 'action'));
-  const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : enemy.skills[0];
+  // Pick skill — support both Enemy.skills and Character.unlockedSkills
+  const enemySkillPool: Skill[] = (enemy as Enemy).skills
+    ?? ((cur.data as unknown as { unlockedSkills: Skill[] }).unlockedSkills)
+    ?? [];
+  if (enemySkillPool.length === 0) return endTurn(newState);
+  const available = enemySkillPool.filter(s => s.currentCooldown === 0 && s.actionCost === 'action');
+  const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : enemySkillPool[0];
 
   const curEnemy = getUnitById(newState, enemy.id);
   if (!curEnemy || !curEnemy.data.hasAction) return endTurn(newState);
