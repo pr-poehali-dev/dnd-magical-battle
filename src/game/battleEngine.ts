@@ -343,6 +343,14 @@ export const executeAttack = (
     const curT = getUnitById(ns, targetId)?.data ?? damagedTgt;
     let pushX: number, pushY: number;
     if (lapseThrowX !== undefined && lapseThrowY !== undefined) {
+      // Ограничиваем бросок: не более 7 клеток (35ft) от атакующего
+      const throwDist = euclideanDist(atk.gridX, atk.gridY, lapseThrowX, lapseThrowY);
+      const maxThrowCells = 7;
+      if (throwDist > maxThrowCells) {
+        const ratio = maxThrowCells / throwDist;
+        lapseThrowX = Math.round(atk.gridX + (lapseThrowX - atk.gridX) * ratio);
+        lapseThrowY = Math.round(atk.gridY + (lapseThrowY - atk.gridY) * ratio);
+      }
       pushX = Math.max(1, Math.min(GRID_COLS - 2, lapseThrowX));
       pushY = Math.max(1, Math.min(GRID_ROWS - 2, lapseThrowY));
     } else {
@@ -451,7 +459,16 @@ export const executeAttack = (
   }
 
   const hasAdv = hasStatusEffect(attacker, 'advantage_atk');
-  const hasDisAdv = hasStatusEffect(attacker, 'disadvantage_atk') || tgtInTree;
+  let hasDisAdv = hasStatusEffect(attacker, 'disadvantage_atk') || tgtInTree;
+
+  // Reserve Balls: если цель в 5 футах — помеха, урон 1к6 вместо 1к4
+  let reserveBallsClose = false;
+  if (skill.id === 'reserve_balls') {
+    if (distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY) <= 5) {
+      hasDisAdv = true;
+      reserveBallsClose = true;
+    }
+  }
 
   // ── 100% attack ──
   if (skill.is100pct) {
@@ -541,6 +558,65 @@ export const executeAttack = (
         logs.push(mkLog(`👊 Cursed Strikes — серия ударов, оба сдвинулись на 1 кл.!`, 'special'));
       }
 
+      // Reserve Balls — если цель близко, урон 1к6
+      if (skill.id === 'reserve_balls' && reserveBallsClose && !roll.crit) {
+        const closeRoll = rollDice({ count: 1, die: 'd6', modifier: 0 });
+        const extraDmg = closeRoll.total - finalDmg;
+        if (extraDmg > 0) {
+          newTarget = applyDamage(newTarget.isUnconscious ? newTarget : (applyHeal(newTarget, finalDmg) as typeof newTarget), closeRoll.total);
+        }
+        logs.push(mkLog(`🟢 Reserve Balls (вблизи): урон 1к6 = ${closeRoll.total}`, 'special'));
+      }
+
+      // Shutted Doors — при провале спасброска: лишает реакции
+      if (skill.id === 'shutted_doors' && skill.savingThrow) {
+        const svDoors = savingThrow20(tgt.abilityScores.con, skill.savingThrow.dc);
+        logs.push(mkLog(`🚪 Shutted Doors: спасбросок ТЕЛ [${svDoors.roll}]=${svDoors.total} vs СЛ${skill.savingThrow.dc} — ${svDoors.success ? 'УСПЕХ (пол урона)' : 'ПРОВАЛ (нет реакции)'}`, 'save', { rolls: [svDoors.roll], total: svDoors.total, mod: getModifier(tgt.abilityScores.con), die: 'd20' }));
+        if (svDoors.success) {
+          newTarget = applyHeal(newTarget, Math.floor(finalDmg / 2)) as typeof newTarget;
+        } else {
+          newTarget = { ...newTarget, hasReaction: false };
+          newStatusFX = [...newStatusFX, { type: 'no_movement', duration: 1, value: 0 }];
+        }
+      }
+
+      // Rough Energy — откидывает цель на 5 клеток (25 ft)
+      if (skill.id === 'rough_energy') {
+        const dx = Math.sign(tgt.gridX - atk.gridX) || 1;
+        const dy = Math.sign(tgt.gridY - atk.gridY);
+        const roughX = Math.max(1, Math.min(GRID_COLS - 2, tgt.gridX + dx * 5));
+        const roughY = Math.max(1, Math.min(GRID_ROWS - 2, tgt.gridY + dy * 5));
+        const roughFree = findFreeCell(newState, roughX, roughY, targetId);
+        if (roughFree && !newTarget.isUnconscious) {
+          newTarget = { ...newTarget, gridX: roughFree.x, gridY: roughFree.y };
+          anims.push(mkAnim('move', targetId, 500, { fromX: tgt.gridX, fromY: tgt.gridY, toX: roughFree.x, toY: roughFree.y }));
+          logs.push(mkLog(`💚 Rough Energy — цель отброшена на 25 фут.!`, 'special'));
+        }
+      }
+
+      // Fever Breaker — цель отлетает на 5 клеток, Хакари летит вперёд на 2 клетки
+      if (skill.id === 'fever_breaker') {
+        const dx = Math.sign(tgt.gridX - atk.gridX) || 1;
+        const dy = Math.sign(tgt.gridY - atk.gridY);
+        const feverTgtX = Math.max(1, Math.min(GRID_COLS - 2, tgt.gridX + dx * 5));
+        const feverTgtY = Math.max(1, Math.min(GRID_ROWS - 2, tgt.gridY + dy * 5));
+        const feverFree = findFreeCell(newState, feverTgtX, feverTgtY, targetId);
+        if (feverFree && !newTarget.isUnconscious) {
+          newTarget = { ...newTarget, gridX: feverFree.x, gridY: feverFree.y };
+          anims.push(mkAnim('move', targetId, 500, { fromX: tgt.gridX, fromY: tgt.gridY, toX: feverFree.x, toY: feverFree.y }));
+          logs.push(mkLog(`💚 Fever Breaker — цель пробита насквозь, отлетает на 25 фут.!`, 'special'));
+        }
+        // Хакари летит вперёд
+        const atkFX = Math.max(1, Math.min(GRID_COLS - 2, atk.gridX + dx * 2));
+        const atkFY = Math.max(1, Math.min(GRID_ROWS - 2, atk.gridY + dy * 2));
+        const atkFree2 = findFreeCell(newState, atkFX, atkFY, attackerId);
+        if (atkFree2) {
+          newState = updateUnit(newState, attackerId, u => ({ ...u, data: { ...u.data, gridX: atkFree2.x, gridY: atkFree2.y } as typeof u.data }));
+          anims.push(mkAnim('move', attackerId, 400, { fromX: atk.gridX, fromY: atk.gridY, toX: atkFree2.x, toY: atkFree2.y }));
+          logs.push(mkLog(`💚 Хакари пробивает двери и летит вперёд!`, 'special'));
+        }
+      }
+
       // Gojo Rapid Punches — толкает врага на 5 ft (1 клетку) в сторону атаки
       if (skill.id === 'gojo_rapid_punches') {
         const dx = Math.sign(tgt.gridX - atk.gridX);
@@ -567,8 +643,8 @@ export const executeAttack = (
         }
       }
 
-      // Saving throw
-      if (skill.savingThrow && !skill.is100pct) {
+      // Saving throw (для скиллов кроме Shutted Doors который уже обработан выше)
+      if (skill.savingThrow && !skill.is100pct && skill.id !== 'shutted_doors') {
         const sv = savingThrow20(tgt.abilityScores[skill.savingThrow.stat], skill.savingThrow.dc);
         logs.push(mkLog(`🎲 Спасбросок ${skill.savingThrow.stat.toUpperCase()} [${sv.roll}]=${sv.total} vs СЛ${skill.savingThrow.dc} — ${sv.success ? 'УСПЕХ' : 'ПРОВАЛ'}`, 'save', { rolls: [sv.roll], total: sv.total, mod: getModifier(tgt.abilityScores[skill.savingThrow.stat]), die: 'd20' }));
         if (sv.perfect) {
@@ -1124,6 +1200,234 @@ export const runEnemyTurn = (state: BattleState): BattleState => {
   }
 
   return endTurn(newState);
+};
+
+// ─── UNARMED ATTACK ────────────────────────────────────────────────────────
+/** Безоружный удар: action, d20+STR+prof vs AC. Damage 1 (или 1к2 для острой энергии) */
+export const doUnarmedAttack = (state: BattleState, attackerId: string, targetId: string): BattleState => {
+  const attacker = getUnitById(state, attackerId);
+  const targetUnit = getUnitById(state, targetId);
+  if (!attacker || !targetUnit || !attacker.data.hasAction) return state;
+
+  const atk = attacker.data;
+  const tgt = targetUnit.data;
+  const distFt = distFeet(atk.gridX, atk.gridY, tgt.gridX, tgt.gridY);
+  if (distFt > 5) {
+    return { ...state, log: [...state.log, mkLog(`❌ Безоружный удар: цель вне досягаемости!`, 'info')].slice(-LOG_MAX) };
+  }
+
+  const atkMod = getModifier(atk.abilityScores.str) + atk.proficiencyBonus;
+  const roll = attackRoll20(atkMod, tgt.armorClass);
+  const logs: BattleLog[] = [];
+  const anims: AnimEvent[] = [mkAnim('attack', attackerId, 250, { toX: tgt.gridX, toY: tgt.gridY, skillName: 'Безоружный удар' })];
+
+  logs.push(mkLog(`🥊 ${atk.name} — безоружный [${roll.roll}]+${atkMod}=${roll.total} vs КБ${tgt.armorClass}`, 'info', { rolls: [roll.roll], total: roll.total, mod: atkMod, die: 'd20' }));
+
+  let ns = updateUnit(state, attackerId, u => ({ ...u, data: { ...u.data, hasAction: false } as typeof u.data }));
+
+  if (!roll.hit) {
+    logs.push(mkLog(`💨 Безоружный удар — ПРОМАХ!`, 'miss'));
+    anims.push(mkAnim('miss', targetId, 200));
+  } else {
+    // Острая энергия: vessel and gambler roll 1d2 instead of 1
+    const hasSharpEnergy = atk.id === 'vessel' || atk.id === 'gambler' || (attacker.kind === 'player' && (atk as Character).passiveBonus?.includes('Острая'));
+    const dmg = hasSharpEnergy ? rollDie('d2') : 1;
+    const finalDmg = roll.crit ? dmg * 2 : dmg;
+    logs.push(mkLog(`👊 Безоружный удар${roll.crit ? ' КРИТ!' : ''}: ${finalDmg} урона → ${tgt.name}`, roll.crit ? 'critical' : 'hit', { rolls: [finalDmg], total: finalDmg, mod: 0, die: 'd2' }));
+    anims.push(mkAnim('hit', targetId, 300, { isCrit: roll.crit }));
+    const damaged = applyDamage(tgt, finalDmg);
+    ns = updateUnit(ns, targetId, u => ({ ...u, data: damaged as typeof u.data }));
+    if (damaged.isUnconscious) {
+      logs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death'));
+      anims.push(mkAnim('death', targetId, 400));
+    }
+  }
+
+  const winTeam = checkWin(ns.units);
+  return {
+    ...ns,
+    log: [...state.log, ...logs].slice(-LOG_MAX),
+    animQueue: [...state.animQueue, ...anims],
+    phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
+    winTeam: winTeam ?? undefined,
+  };
+};
+
+// ─── OPPORTUNITY ATTACK (атака отхода) ─────────────────────────────────────
+/** Реакция: когда враг уходит из 5-футовой зоны. Тратит реакцию, при попадании — цель теряет всё движение */
+export const doOpportunityAttack = (state: BattleState, reactorId: string, targetId: string): BattleState => {
+  const reactor = getUnitById(state, reactorId);
+  const targetUnit = getUnitById(state, targetId);
+  if (!reactor || !targetUnit || !reactor.data.hasReaction) return state;
+
+  const atk = reactor.data;
+  const tgt = targetUnit.data;
+  const atkMod = getModifier(atk.abilityScores.str) + atk.proficiencyBonus;
+  const roll = attackRoll20(atkMod, tgt.armorClass);
+  const logs: BattleLog[] = [];
+  const anims: AnimEvent[] = [mkAnim('attack', reactorId, 250, { toX: tgt.gridX, toY: tgt.gridY, skillName: 'Атака отхода' })];
+
+  logs.push(mkLog(`⚡ ${atk.name} — атака отхода! [${roll.roll}]+${atkMod}=${roll.total} vs КБ${tgt.armorClass}`, 'info', { rolls: [roll.roll], total: roll.total, mod: atkMod, die: 'd20' }));
+
+  let ns = updateUnit(state, reactorId, u => ({ ...u, data: { ...u.data, hasReaction: false } as typeof u.data }));
+
+  if (!roll.hit) {
+    logs.push(mkLog(`💨 Атака отхода — ПРОМАХ`, 'miss'));
+    anims.push(mkAnim('miss', targetId, 200));
+  } else {
+    const hasSharpEnergy = atk.id === 'vessel' || atk.id === 'gambler';
+    const dmg = hasSharpEnergy ? rollDie('d2') : 1;
+    logs.push(mkLog(`👊 Атака отхода: ${dmg} урона → ${tgt.name}. Цель останавливается!`, 'hit', { rolls: [dmg], total: dmg, mod: 0, die: 'd2' }));
+    anims.push(mkAnim('hit', targetId, 300));
+    const damaged = applyDamage(tgt, dmg);
+    // Цель теряет всё движение
+    ns = updateUnit(ns, targetId, u => ({ ...u, data: { ...damaged, movementLeft: 0 } as typeof u.data }));
+    if (damaged.isUnconscious) {
+      logs.push(mkLog(`💀 ${tgt.name} повержен!`, 'death'));
+      anims.push(mkAnim('death', targetId, 400));
+    }
+  }
+
+  const winTeam = checkWin(ns.units);
+  return {
+    ...ns,
+    log: [...state.log, ...logs].slice(-LOG_MAX),
+    animQueue: [...state.animQueue, ...anims],
+    phase: winTeam !== null ? (winTeam === 0 ? 'victory' : 'defeat') : 'active',
+    winTeam: winTeam ?? undefined,
+  };
+};
+
+// ─── PROBABILITY SHIFT (Хакари: Изменение вероятностей) ───────────────────
+export const doProbabilityShift = (state: BattleState, unitId: string, choice: 'ac' | 'hp' | 'attack'): BattleState => {
+  const unit = getUnitById(state, unitId);
+  if (!unit || !unit.data.hasBonusAction) return state;
+  const data = unit.data;
+  const logs: BattleLog[] = [];
+
+  let ns = updateUnit(state, unitId, u => ({ ...u, data: { ...u.data, hasBonusAction: false } as typeof u.data }));
+
+  if (choice === 'ac') {
+    const roll = rollDieN(20);
+    logs.push(mkLog(`🎲 Изменение вероятностей (КБ): выпало [${roll}] — КБ становится ${roll} до следующего хода!`, 'special', { rolls: [roll], total: roll, mod: 0, die: 'd20' }));
+    // Сохраняем как empowered с value = новый КБ
+    const newFX: StatusEffect[] = [...data.statusEffects.filter(e => e.type !== 'empowered'), { type: 'empowered', duration: 1, value: roll, source: 'probability_ac' }];
+    ns = updateUnit(ns, unitId, u => ({ ...u, data: { ...u.data, armorClass: roll, statusEffects: newFX } as typeof u.data }));
+  } else if (choice === 'hp') {
+    const roll = rollDie('d2');
+    if (roll === 1) {
+      logs.push(mkLog(`🎲 Изменение вероятностей (HP): выпало 1 → −1 HP!`, 'hit', { rolls: [roll], total: roll, mod: 0, die: 'd2' }));
+      const newHp = Math.max(1, data.hp - 1);
+      ns = updateUnit(ns, unitId, u => ({ ...u, data: { ...u.data, hp: newHp } as typeof u.data }));
+    } else {
+      logs.push(mkLog(`🎲 Изменение вероятностей (HP): выпало 2 → +1 HP!`, 'heal', { rolls: [roll], total: roll, mod: 0, die: 'd2' }));
+      const newHp = Math.min(data.maxHp, data.hp + 1);
+      ns = updateUnit(ns, unitId, u => ({ ...u, data: { ...u.data, hp: newHp } as typeof u.data }));
+    }
+  } else {
+    const roll = rollDie('d2');
+    if (roll === 1) {
+      logs.push(mkLog(`🎲 Изменение вероятностей (Атака): выпало 1 → ПОМЕХА на следующую атаку!`, 'special', { rolls: [roll], total: roll, mod: 0, die: 'd2' }));
+      const newFX: StatusEffect[] = [...data.statusEffects.filter(e => e.type !== 'disadvantage_atk' && e.type !== 'advantage_atk'), { type: 'disadvantage_atk', duration: 1, value: 0, source: 'probability_atk' }];
+      ns = updateUnit(ns, unitId, u => ({ ...u, data: { ...u.data, statusEffects: newFX } as typeof u.data }));
+    } else {
+      logs.push(mkLog(`🎲 Изменение вероятностей (Атака): выпало 2 → ПРЕИМУЩЕСТВО на следующую атаку!`, 'special', { rolls: [roll], total: roll, mod: 0, die: 'd2' }));
+      const newFX: StatusEffect[] = [...data.statusEffects.filter(e => e.type !== 'disadvantage_atk' && e.type !== 'advantage_atk'), { type: 'advantage_atk', duration: 1, value: 0, source: 'probability_atk' }];
+      ns = updateUnit(ns, unitId, u => ({ ...u, data: { ...u.data, statusEffects: newFX } as typeof u.data }));
+    }
+  }
+
+  return { ...ns, log: [...state.log, ...logs].slice(-LOG_MAX) };
+};
+
+// ─── ENEMY MOVE (для пошагового бота) ─────────────────────────────────────
+export const runEnemyMove = (state: BattleState): BattleState => {
+  const cur = getCurrentUnit(state);
+  if (cur.kind !== 'enemy' && cur.teamId !== 1) return state;
+  const enemy = cur.data;
+  if (enemy.isUnconscious || enemy.isDead) return state;
+
+  const playerUnits = state.units.filter(u => u.teamId !== cur.teamId && !u.data.isUnconscious);
+  if (playerUnits.length === 0) return state;
+
+  const nearest = playerUnits.reduce((best, u) => {
+    const d = chebyshevDist(enemy.gridX, enemy.gridY, u.data.gridX, u.data.gridY);
+    const bd = chebyshevDist(enemy.gridX, enemy.gridY, best.data.gridX, best.data.gridY);
+    return d < bd ? u : best;
+  }, playerUnits[0]);
+
+  const enemySkillPool: Skill[] = (enemy as Enemy).skills?.length
+    ? (enemy as Enemy).skills
+    : ((cur.data as unknown as { unlockedSkills: Skill[] }).unlockedSkills ?? []);
+  const available = enemySkillPool.filter(s => s.currentCooldown === 0 && s.actionCost === 'action');
+  const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : (enemySkillPool[0] ?? null);
+
+  let newState = state;
+  const movesLeft = Math.floor(enemy.movementLeft / CELL_FT);
+  for (let step = 0; step < movesLeft; step++) {
+    const curEn = getUnitById(newState, enemy.id)?.data ?? enemy;
+    const curDist = distFeet(curEn.gridX, curEn.gridY, nearest.data.gridX, nearest.data.gridY);
+    if (skill && curDist <= skill.range) break;
+
+    const dx = Math.sign(nearest.data.gridX - curEn.gridX);
+    const dy = Math.sign(nearest.data.gridY - curEn.gridY);
+    const candidates = [
+      { x: curEn.gridX + dx, y: curEn.gridY + dy },
+      { x: curEn.gridX + dx, y: curEn.gridY },
+      { x: curEn.gridX,      y: curEn.gridY + dy },
+    ];
+    let moved = false;
+    for (const cand of candidates) {
+      if (cand.x < 1 || cand.x >= GRID_COLS - 1 || cand.y < 1 || cand.y >= GRID_ROWS - 1) continue;
+      const cell = newState.grid[cand.y]?.[cand.x];
+      if (!cell || cell.terrain === 'blocked') continue;
+      const occupied = newState.units.some(u => u.data.id !== enemy.id && u.data.gridX === cand.x && u.data.gridY === cand.y && !u.data.isUnconscious);
+      if (occupied) continue;
+      newState = moveUnit(newState, enemy.id, cand.x, cand.y);
+      moved = true;
+      break;
+    }
+    if (!moved) break;
+  }
+  return newState;
+};
+
+// ─── ENEMY ATTACK (для пошагового бота) ────────────────────────────────────
+export const runEnemyAttack = (state: BattleState): BattleState => {
+  const cur = getCurrentUnit(state);
+  if (cur.kind !== 'enemy' && cur.teamId !== 1) return state;
+  const enemy = getUnitById(state, cur.data.id);
+  if (!enemy || !enemy.data.hasAction) return state;
+
+  const playerUnits = state.units.filter(u => u.teamId !== cur.teamId && !u.data.isUnconscious);
+  if (playerUnits.length === 0) return state;
+
+  const nearest = playerUnits.reduce((best, u) => {
+    const d = chebyshevDist(enemy.data.gridX, enemy.data.gridY, u.data.gridX, u.data.gridY);
+    const bd = chebyshevDist(enemy.data.gridX, enemy.data.gridY, best.data.gridX, best.data.gridY);
+    return d < bd ? u : best;
+  }, playerUnits[0]);
+
+  const enemySkillPool: Skill[] = (enemy.data as Enemy).skills?.length
+    ? (enemy.data as Enemy).skills
+    : ((enemy.data as unknown as { unlockedSkills: Skill[] }).unlockedSkills ?? []);
+  if (enemySkillPool.length === 0) return state;
+  const available = enemySkillPool.filter(s => s.currentCooldown === 0 && s.actionCost === 'action');
+  const skill = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : enemySkillPool[0];
+
+  const distNow = distFeet(enemy.data.gridX, enemy.data.gridY, nearest.data.gridX, nearest.data.gridY);
+
+  if (skill.id === 'reversal_red' || skill.aoe) {
+    const ns = executeReversalRed(state, cur.data.id, nearest.data.gridX, nearest.data.gridY);
+    return ns;
+  }
+  if (skill.id === 'lapse_blue') {
+    return executeAttack(state, cur.data.id, skill, nearest.data.id);
+  }
+  if (distNow <= skill.range || skill.aoe) {
+    return executeAttack(state, cur.data.id, skill, nearest.data.id);
+  }
+  return state;
 };
 
 // ─── UI helpers ────────────────────────────────────────────────────────────

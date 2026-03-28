@@ -1,14 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 
 interface MainMenuProps {
-  onNewGame: () => void;
-  onContinue: () => void;
-  onPvP?: () => void;
-  onLocalPvP?: () => void;
-  hasSave: boolean;
+  onSimplyFight: () => void;
+  hasSave?: boolean;
 }
 
-export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, hasSave }: MainMenuProps) {
+export default function MainMenu({ onSimplyFight }: MainMenuProps) {
   const [show, setShow] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -16,7 +13,6 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
 
   useEffect(() => { setTimeout(() => setShow(true), 80); }, []);
 
-  // ── Анимированный фон на canvas ─────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -29,71 +25,99 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
     resize();
     window.addEventListener('resize', resize);
 
-    // Particles: cursed energy orbs
-    const orbs = Array.from({ length: 40 }, () => ({
+    // Частицы: проклятая энергия
+    const orbs = Array.from({ length: 55 }, () => ({
       x: Math.random() * window.innerWidth,
       y: Math.random() * window.innerHeight,
-      r: Math.random() * 3 + 0.5,
-      vx: (Math.random() - 0.5) * 0.3,
-      vy: (Math.random() - 0.5) * 0.3,
+      r: Math.random() * 3.5 + 0.5,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: (Math.random() - 0.5) * 0.4,
       hue: Math.random() > 0.5 ? 200 + Math.random() * 60 : 270 + Math.random() * 40,
-      alpha: Math.random() * 0.6 + 0.2,
+      alpha: Math.random() * 0.7 + 0.2,
     }));
 
-    // Lightning bolts state
-    const lightnings: { pts: { x: number; y: number }[]; life: number; maxLife: number; alpha: number }[] = [];
+    // Молнии: более частые, длинные, разветвлённые
+    type LightningBranch = { pts: { x: number; y: number }[] };
+    type Lightning = { main: { x: number; y: number }[]; branches: LightningBranch[]; life: number; maxLife: number; alpha: number; hue: number; width: number };
+    const lightnings: Lightning[] = [];
 
     const spawnLightning = () => {
-      const pts: { x: number; y: number }[] = [];
+      const main: { x: number; y: number }[] = [];
       let x = Math.random() * canvas.width;
-      let y = 0;
-      pts.push({ x, y });
-      while (y < canvas.height * 0.6) {
-        x += (Math.random() - 0.5) * 80;
-        y += 30 + Math.random() * 40;
-        pts.push({ x, y });
+      let y = -10;
+      main.push({ x, y });
+      // Более длинные молнии — проходят весь экран
+      while (y < canvas.height * (0.6 + Math.random() * 0.5)) {
+        x += (Math.random() - 0.5) * 100;
+        y += 20 + Math.random() * 50;
+        main.push({ x, y });
       }
-      lightnings.push({ pts, life: 0, maxLife: 20 + Math.random() * 20, alpha: 1 });
+
+      // Разветвления
+      const branches: LightningBranch[] = [];
+      const branchCount = Math.floor(Math.random() * 4) + 1;
+      for (let b = 0; b < branchCount; b++) {
+        const startIdx = Math.floor(Math.random() * (main.length - 2)) + 1;
+        const branch: { x: number; y: number }[] = [];
+        let bx = main[startIdx].x;
+        let by = main[startIdx].y;
+        branch.push({ x: bx, y: by });
+        const branchLen = Math.floor(Math.random() * 5) + 3;
+        for (let i = 0; i < branchLen; i++) {
+          bx += (Math.random() - 0.5) * 80;
+          by += 15 + Math.random() * 35;
+          branch.push({ x: bx, y: by });
+        }
+        branches.push({ pts: branch });
+      }
+
+      lightnings.push({
+        main, branches,
+        life: 0, maxLife: 12 + Math.random() * 16,
+        alpha: 1,
+        hue: 190 + Math.random() * 100,
+        width: 1 + Math.random() * 2,
+      });
     };
 
-    let nextLightning = 60;
+    // Начальный залп молний
+    for (let i = 0; i < 3; i++) spawnLightning();
+    let nextLightning = 20;
 
     const draw = (t: number) => {
       const dt = t - timeRef.current;
       timeRef.current = t;
       const W = canvas.width, H = canvas.height;
 
-      // BG
-      ctx.fillStyle = '#03020d';
+      ctx.fillStyle = '#02010b';
       ctx.fillRect(0, 0, W, H);
 
-      // Dark gradient vignette
+      // Тёмный виньет
       const vg = ctx.createRadialGradient(W / 2, H * 0.4, 0, W / 2, H * 0.4, W * 0.7);
-      vg.addColorStop(0, 'rgba(60,0,80,0.18)');
-      vg.addColorStop(0.5, 'rgba(10,0,30,0.10)');
-      vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+      vg.addColorStop(0, 'rgba(50,0,70,0.15)');
+      vg.addColorStop(0.5, 'rgba(8,0,25,0.08)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.65)');
       ctx.fillStyle = vg;
       ctx.fillRect(0, 0, W, H);
 
       // Hex grid
       ctx.save();
-      ctx.globalAlpha = 0.04;
+      ctx.globalAlpha = 0.035;
       ctx.strokeStyle = '#8b5cf6';
       ctx.lineWidth = 0.5;
       const hw = 28, hh = 24;
       for (let row = -1; row < H / hh + 1; row++) {
         for (let col = -1; col < W / (hw * 1.5) + 1; col++) {
-          const cx = col * hw * 1.5;
-          const cy = row * hh * 2 + (col % 2 ? hh : 0);
+          const cx2 = col * hw * 1.5;
+          const cy2 = row * hh * 2 + (col % 2 ? hh : 0);
           ctx.beginPath();
           for (let i = 0; i < 6; i++) {
             const a = (i * 60 - 30) * Math.PI / 180;
-            const px = cx + hw * Math.cos(a);
-            const py = cy + hh * Math.sin(a);
-            if (i === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
+            const px = cx2 + hw * Math.cos(a);
+            const py = cy2 + hh * Math.sin(a);
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
           }
-          ctx.closePath();
-          ctx.stroke();
+          ctx.closePath(); ctx.stroke();
         }
       }
       ctx.restore();
@@ -101,15 +125,16 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
       // Glow blobs
       const ts = t * 0.001;
       const blobs = [
-        { x: W * 0.15, y: H * 0.25, r: W * 0.2, hue: 220, s: Math.sin(ts * 0.7) },
-        { x: W * 0.85, y: H * 0.35, r: W * 0.18, hue: 280, s: Math.sin(ts * 0.9 + 1) },
-        { x: W * 0.5,  y: H * 0.7,  r: W * 0.25, hue: 250, s: Math.sin(ts * 0.5 + 2) },
-        { x: W * 0.3,  y: H * 0.8,  r: W * 0.15, hue: 0,   s: Math.sin(ts * 0.6 + 3) },
+        { x: W * 0.12, y: H * 0.22, r: W * 0.22, hue: 220, s: Math.sin(ts * 0.7) },
+        { x: W * 0.88, y: H * 0.32, r: W * 0.2, hue: 280, s: Math.sin(ts * 0.9 + 1) },
+        { x: W * 0.5,  y: H * 0.72, r: W * 0.28, hue: 250, s: Math.sin(ts * 0.5 + 2) },
+        { x: W * 0.28, y: H * 0.85, r: W * 0.18, hue: 0,   s: Math.sin(ts * 0.6 + 3) },
+        { x: W * 0.72, y: H * 0.78, r: W * 0.16, hue: 160, s: Math.sin(ts * 0.8 + 4) },
       ];
       blobs.forEach(b => {
-        const rg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r * (0.85 + b.s * 0.1));
-        rg.addColorStop(0, `hsla(${b.hue},80%,55%,0.10)`);
-        rg.addColorStop(1, `hsla(${b.hue},80%,40%,0.00)`);
+        const rg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r * (0.85 + b.s * 0.12));
+        rg.addColorStop(0, `hsla(${b.hue},85%,55%,0.12)`);
+        rg.addColorStop(1, `hsla(${b.hue},85%,40%,0.00)`);
         ctx.fillStyle = rg;
         ctx.fillRect(0, 0, W, H);
       });
@@ -124,44 +149,67 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
         if (o.y > H) o.y = 0;
         ctx.save();
         ctx.globalAlpha = o.alpha * (0.7 + 0.3 * Math.sin(t * 0.002 + o.x));
-        const rg2 = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r * 4);
-        rg2.addColorStop(0, `hsl(${o.hue},100%,90%)`);
-        rg2.addColorStop(0.4, `hsl(${o.hue},100%,60%)`);
-        rg2.addColorStop(1, `hsl(${o.hue},100%,40%,0)`);
+        const rg2 = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r * 5);
+        rg2.addColorStop(0, `hsl(${o.hue},100%,92%)`);
+        rg2.addColorStop(0.4, `hsl(${o.hue},100%,62%)`);
+        rg2.addColorStop(1, `hsla(${o.hue},100%,40%,0)`);
         ctx.fillStyle = rg2;
-        ctx.beginPath();
-        ctx.arc(o.x, o.y, o.r * 4, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(o.x, o.y, o.r * 5, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       });
 
-      // Lightnings
-      nextLightning--;
+      // Молнии — ЭПИЧНЫЕ, частые, разветвлённые
+      nextLightning -= dt * 0.06; // ~60fps: уменьшаем каждый кадр
       if (nextLightning <= 0) {
-        spawnLightning();
-        nextLightning = 80 + Math.random() * 120;
+        const burst = Math.random() > 0.65 ? 3 : 1; // иногда залп из 3
+        for (let i = 0; i < burst; i++) spawnLightning();
+        nextLightning = 25 + Math.random() * 45; // чаще: каждые ~0.5-1.2 сек
       }
+
       for (let i = lightnings.length - 1; i >= 0; i--) {
         const l = lightnings[i];
         l.life++;
         if (l.life > l.maxLife) { lightnings.splice(i, 1); continue; }
         const lifeRatio = l.life / l.maxLife;
-        const fade = lifeRatio < 0.3 ? lifeRatio / 0.3 : 1 - (lifeRatio - 0.3) / 0.7;
+        const fade = lifeRatio < 0.2 ? lifeRatio / 0.2 : 1 - (lifeRatio - 0.2) / 0.8;
+
+        // Основной разряд
         ctx.save();
-        ctx.globalAlpha = fade * 0.7;
-        ctx.strokeStyle = `hsl(${200 + Math.random() * 80},100%,85%)`;
-        ctx.lineWidth = 1.2 * fade;
-        ctx.shadowBlur = 12;
-        ctx.shadowColor = '#a5f3fc';
+        ctx.globalAlpha = fade * 0.9;
+        // Внешнее свечение
+        ctx.shadowBlur = 25 + Math.random() * 20;
+        ctx.shadowColor = `hsl(${l.hue},100%,80%)`;
+        ctx.strokeStyle = `hsl(${l.hue},100%,90%)`;
+        ctx.lineWidth = l.width * fade * (0.8 + Math.random() * 0.4);
+        ctx.lineCap = 'round';
         ctx.beginPath();
-        l.pts.forEach((p, idx) => idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        l.main.forEach((p, idx) => idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
         ctx.stroke();
+
+        // Белый центр молнии
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = `rgba(255,255,255,${fade * 0.7})`;
+        ctx.lineWidth = l.width * 0.3 * fade;
+        ctx.beginPath();
+        l.main.forEach((p, idx) => idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        ctx.stroke();
+
+        // Ветви
+        l.branches.forEach(br => {
+          ctx.globalAlpha = fade * 0.55;
+          ctx.shadowBlur = 12;
+          ctx.strokeStyle = `hsl(${l.hue + 20},100%,80%)`;
+          ctx.lineWidth = l.width * 0.5 * fade;
+          ctx.beginPath();
+          br.pts.forEach((p, idx) => idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+          ctx.stroke();
+        });
         ctx.restore();
       }
 
       // Scan lines
       ctx.save();
-      ctx.globalAlpha = 0.03;
+      ctx.globalAlpha = 0.025;
       for (let sy = 0; sy < H; sy += 4) {
         ctx.fillStyle = 'rgba(0,0,0,1)';
         ctx.fillRect(0, sy, W, 2);
@@ -182,7 +230,6 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
     <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
-      {/* Main content */}
       <div
         className="relative z-10 flex flex-col items-center gap-8"
         style={{
@@ -193,10 +240,6 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
       >
         {/* Logo */}
         <div className="text-center mb-2 select-none">
-          <div
-            className="text-8xl mb-3"
-            style={{ filter: 'drop-shadow(0 0 24px #a855f7) drop-shadow(0 0 48px #7c3aed)', animation: 'logoFloat 4s ease-in-out infinite alternate' }}
-          >⛩️</div>
           <h1
             className="font-title text-7xl font-black text-white tracking-wider mb-2"
             style={{ textShadow: '0 0 20px #a855f7, 0 0 50px #7c3aed, 0 0 100px #4f1fa0', letterSpacing: '0.08em' }}
@@ -209,71 +252,29 @@ export default function MainMenu({ onNewGame, onContinue, onPvP, onLocalPvP, has
           >
             Jujutsu Chronicles
           </div>
-          <div className="text-cyan-400/80 text-sm tracking-[0.3em] mt-2 font-mono uppercase">
+          <div className="text-cyan-400/70 text-sm tracking-[0.25em] mt-2 font-mono uppercase">
             — Пошаговая РПГ —
           </div>
         </div>
 
-        {/* Grade badges */}
-        <div className="flex gap-2 mb-1">
-          {([['S','#ff0040'],['A','#ff6b35'],['B','#ffd700'],['C','#00d4ff'],['D','#8888aa']] as [string,string][]).map(([g, clr], i) => (
-            <div
-              key={g}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-black border"
-              style={{
-                borderColor: clr,
-                color: clr,
-                boxShadow: `0 0 10px ${clr}50, inset 0 0 8px ${clr}10`,
-                animation: `gradeGlow ${1.2 + i * 0.25}s ease-in-out infinite alternate`,
-                background: `${clr}08`,
-              }}
-            >{g}</div>
-          ))}
-        </div>
-
-        {/* Menu buttons */}
+        {/* Menu button */}
         <div className="flex flex-col gap-3 w-80">
           <MenuBtn
-            onClick={onNewGame}
-            gradient="from-violet-900/90 to-purple-900/90"
-            border="#9333ea"
-            glow="#7c3aed"
-            icon="⚔️"
-            label="НОВАЯ ИГРА"
+            onClick={onSimplyFight}
+            gradient="from-red-900/90 to-rose-900/90"
+            border="#ef4444"
+            glow="#b91c1c"
+            icon="⚔"
+            label="SIMPLY FIGHT"
           />
-
-          {hasSave && (
-            <MenuBtn onClick={onContinue} gradient="from-blue-900/90 to-cyan-900/90" border="#06b6d4" glow="#0891b2" icon="▶" label="ПРОДОЛЖИТЬ" />
-          )}
-
-          {onLocalPvP && (
-            <MenuBtn onClick={onLocalPvP} gradient="from-cyan-900/90 to-teal-900/90" border="#06b6d4" glow="#0e7490" icon="👥" label="МУЛЬТИПЛЕЕР (2 ИГРОКА)" />
-          )}
-
-          {onPvP && (
-            <MenuBtn onClick={onPvP} gradient="from-red-900/90 to-rose-900/90" border="#ef4444" glow="#b91c1c" icon="🤖" label="PLAYER VS BOT" />
-          )}
-        </div>
-
-        <div className="text-center text-purple-600/50 text-xs font-mono tracking-widest mt-4">
-          Выбери своего чародея. Уничтожь проклятия.<br />
-          Стань сильнейшим — или умри.
         </div>
 
         <div className="text-center text-purple-900/60 text-xs font-mono mt-2">
-          JJK Chronicles v1.0 · Based on Jujutsu Kaisen by Gege Akutami
+          JJK Chronicles v2.0 · Based on Jujutsu Kaisen by Gege Akutami
         </div>
       </div>
 
       <style>{`
-        @keyframes logoFloat {
-          from { transform: translateY(0px) scale(1); }
-          to   { transform: translateY(-10px) scale(1.05); }
-        }
-        @keyframes gradeGlow {
-          from { opacity: 0.7; transform: scale(0.97); }
-          to   { opacity: 1;   transform: scale(1.05); }
-        }
         @keyframes btnShimmer {
           0%   { transform: translateX(-100%) skewX(-20deg); }
           100% { transform: translateX(300%) skewX(-20deg); }
@@ -302,8 +303,8 @@ function MenuBtn({
       className={`relative py-4 px-6 bg-gradient-to-r ${gradient} rounded-xl font-title font-bold text-white text-base tracking-widest overflow-hidden transition-all duration-300`}
       style={{
         border: `1px solid ${border}`,
-        boxShadow: hover ? `0 0 30px ${glow}70, 0 0 60px ${glow}30` : `0 0 12px ${glow}30`,
-        transform: hover ? 'scale(1.025) translateY(-1px)' : 'scale(1)',
+        boxShadow: hover ? `0 0 35px ${glow}80, 0 0 70px ${glow}35` : `0 0 14px ${glow}35`,
+        transform: hover ? 'scale(1.03) translateY(-2px)' : 'scale(1)',
         backdropFilter: 'blur(8px)',
       }}
     >
@@ -315,7 +316,7 @@ function MenuBtn({
         <span
           className="absolute inset-0 pointer-events-none"
           style={{
-            background: `linear-gradient(90deg, transparent 0%, ${glow}30 50%, transparent 100%)`,
+            background: `linear-gradient(90deg, transparent 0%, ${glow}35 50%, transparent 100%)`,
             animation: 'btnShimmer 0.6s ease forwards',
           }}
         />

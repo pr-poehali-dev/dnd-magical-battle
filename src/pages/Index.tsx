@@ -1,29 +1,19 @@
 import React, { useState, useCallback } from 'react';
 import { Character, BattleState, Enemy } from '@/game/types';
-import { CHARACTERS, applyLevelUp } from '@/game/characters';
-import { initBattle, initLocalPvP } from '@/game/battleEngine';
-import { getEnemyById } from '@/game/enemies';
+import { initBattle } from '@/game/battleEngine';
+import { getModifier } from '@/game/dndUtils';
 
 import MainMenu from '@/components/game/MainMenu';
-import CharacterSelect from '@/components/game/CharacterSelect';
+import TeamSetup from '@/components/game/TeamSetup';
 import BattleScreen from '@/components/game/BattleScreen';
 
-type Screen =
-  | 'mainMenu'
-  | 'characterSelect'
-  | 'battle'
-  | 'pvpSelect'       // старый PvP vs бот
-  | 'pvpBattle'
-  | 'localPvpP1'      // локальный PvP — выбор 1-го игрока
-  | 'localPvpP2'      // локальный PvP — выбор 2-го игрока
-  | 'localPvpBattle'
-  | 'victory'
-  | 'defeat';
+type Screen = 'mainMenu' | 'teamSetup' | 'battle' | 'result';
 
-function charAsEnemy(char: Character, slot: number): Enemy {
+/** Превращает Character в Enemy (для команды бота) */
+function charAsEnemy(char: Character, startX: number, startY: number): Enemy {
   return {
-    id: char.id + '_bot',
-    name: char.name + ' (Бот)',
+    id: char.id + '_bot_' + Math.random().toString(36).slice(2),
+    name: char.name,
     color: char.color,
     glowColor: char.glowColor,
     hp: char.maxHp,
@@ -31,7 +21,7 @@ function charAsEnemy(char: Character, slot: number): Enemy {
     tempHp: 0,
     armorClass: char.armorClass,
     speed: char.speed,
-    initiative: char.initiative,
+    initiative: getModifier(char.abilityScores.dex),
     proficiencyBonus: char.proficiencyBonus,
     abilityScores: char.abilityScores,
     statusEffects: [],
@@ -43,8 +33,8 @@ function charAsEnemy(char: Character, slot: number): Enemy {
     isUnconscious: false,
     isDead: false,
     onTree: false,
-    gridX: 13,
-    gridY: 3 + slot * 2,
+    gridX: startX,
+    gridY: startY,
     challengeRating: char.level,
     skills: char.unlockedSkills,
     exp: 100,
@@ -57,151 +47,108 @@ function charAsEnemy(char: Character, slot: number): Enemy {
 
 export default function Index() {
   const [screen, setScreen] = useState<Screen>('mainMenu');
-  const [selectedChar, setSelectedChar] = useState<Character | null>(null);
   const [battleState, setBattleState] = useState<BattleState | null>(null);
-  const [localP1, setLocalP1] = useState<Character | null>(null);
-  const [winnerName, setWinnerName] = useState<string>('');
+  const [resultWinner, setResultWinner] = useState<string>('');
+  const [resultLoser, setResultLoser] = useState<string>('');
 
-  // ── Story mode ──
-  const handleSelectCharacter = (char: Character) => {
-    setSelectedChar({ ...char });
-    const enemy1 = { ...getEnemyById('medium_curse'), gridX: 12, gridY: 4 };
-    const enemy2 = { ...getEnemyById('small_curse'), gridX: 13, gridY: 6 };
-    const state = initBattle([{ ...char }], [enemy1, enemy2]);
+  const handleStartFight = useCallback((char0: Character, char1: Character) => {
+    // char0 = игрок (team 0), char1 = бот (team 1, Enemy)
+    const p1: Character = { ...char0, gridX: 2, gridY: 8 };
+    const bot: Enemy = charAsEnemy({ ...char1 }, 21, 8);
+
+    const state = initBattle([p1], [bot]);
     setBattleState(state);
     setScreen('battle');
-  };
+  }, []);
 
   const handleVictory = useCallback((state: BattleState) => {
-    if (!selectedChar) return;
-    const expGained = 150;
-    let updatedChar = { ...selectedChar, exp: selectedChar.exp + expGained };
-    if (updatedChar.exp >= updatedChar.expToNext) updatedChar = applyLevelUp(updatedChar);
-    setSelectedChar(updatedChar);
-    setWinnerName('');
-    setScreen('victory');
-  }, [selectedChar]);
+    const winner = state.units.find(u => !u.data.isUnconscious && !u.data.isDead);
+    const loser = state.units.find(u => u.data.isUnconscious || u.data.isDead);
+    setResultWinner(winner?.data.name ?? 'Неизвестный');
+    setResultLoser(loser?.data.name ?? '');
+    setScreen('result');
+  }, []);
 
   const handleDefeat = useCallback(() => {
-    setWinnerName('');
-    setScreen('defeat');
+    setResultWinner('Бот');
+    setResultLoser('');
+    setScreen('result');
   }, []);
 
-  // ── PvP vs бот ──
-  const handlePvpSelectP1 = (char: Character) => {
-    const p1 = { ...char, gridX: 2, gridY: 5 };
-    const botOptions = CHARACTERS.filter(c => c.id !== char.id);
-    const botChar = botOptions[Math.floor(Math.random() * botOptions.length)];
-    const botEnemy = charAsEnemy(botChar, 0);
-    const state = initBattle([p1], [botEnemy]);
-    setBattleState(state);
-    setScreen('pvpBattle');
-  };
-
-  // ── Локальный PvP ──
-  const handleLocalPvpP1 = (char: Character) => {
-    setLocalP1({ ...char });
-    setScreen('localPvpP2');
-  };
-
-  const handleLocalPvpP2 = (char: Character) => {
-    if (!localP1) return;
-    const state = initLocalPvP({ ...localP1 }, { ...char });
-    setBattleState(state);
-    setScreen('localPvpBattle');
-  };
-
-  const handleLocalPvpEnd = useCallback((state: BattleState) => {
-    // Определяем победителя по выжившей команде
-    const winner = state.units.find(u => !u.data.isUnconscious && !u.data.isDead);
-    setWinnerName(winner ? winner.data.name : '');
-    setScreen('victory');
-  }, []);
-
-  const isLocalPvp = screen === 'localPvpBattle';
+  const handleBattleEnd = useCallback(() => {
+    // Кнопка "Завершить битву" — определяем победителя из текущего состояния
+    if (!battleState) { setScreen('mainMenu'); return; }
+    const winner = battleState.units.find(u => !u.data.isUnconscious && !u.data.isDead);
+    setResultWinner(winner?.data.name ?? 'Неизвестный');
+    setResultLoser('');
+    setScreen('result');
+  }, [battleState]);
 
   return (
     <div className="min-h-screen" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
+
       {screen === 'mainMenu' && (
-        <MainMenu
-          onNewGame={() => setScreen('characterSelect')}
-          onContinue={() => setScreen('characterSelect')}
-          onPvP={() => setScreen('pvpSelect')}
-          onLocalPvP={() => setScreen('localPvpP1')}
-          hasSave={false}
-        />
+        <MainMenu onSimplyFight={() => setScreen('teamSetup')} />
       )}
 
-      {screen === 'characterSelect' && (
-        <CharacterSelect
-          onSelect={handleSelectCharacter}
+      {screen === 'teamSetup' && (
+        <TeamSetup
+          onStart={handleStartFight}
           onBack={() => setScreen('mainMenu')}
-          title="Выбери чародея"
         />
       )}
 
-      {screen === 'pvpSelect' && (
-        <CharacterSelect
-          onSelect={handlePvpSelectP1}
-          onBack={() => setScreen('mainMenu')}
-          title="PvP vs Бот — Выбери чародея"
-          subtitle="Противника выберет бот"
-        />
-      )}
-
-      {screen === 'localPvpP1' && (
-        <CharacterSelect
-          onSelect={handleLocalPvpP1}
-          onBack={() => setScreen('mainMenu')}
-          title="Игрок 1 — Выбери чародея"
-          subtitle="Локальный мультиплеер"
-        />
-      )}
-
-      {screen === 'localPvpP2' && (
-        <CharacterSelect
-          onSelect={handleLocalPvpP2}
-          onBack={() => setScreen('localPvpP1')}
-          title="Игрок 2 — Выбери чародея"
-          subtitle={`Против: ${localP1?.name}`}
-          excludeId={localP1?.id}
-        />
-      )}
-
-      {(screen === 'battle' || screen === 'pvpBattle' || screen === 'localPvpBattle') && battleState && (
+      {screen === 'battle' && battleState && (
         <BattleScreen
           battleState={battleState}
           onBattleUpdate={setBattleState}
-          onVictory={isLocalPvp ? handleLocalPvpEnd : handleVictory}
+          onVictory={handleVictory}
           onDefeat={handleDefeat}
-          isLocalPvp={isLocalPvp}
+          onBattleEnd={handleBattleEnd}
+          isLocalPvp={false}
         />
       )}
 
-      {screen === 'victory' && (
-        <div className="min-h-screen bg-[#050510] flex flex-col items-center justify-center gap-6">
-          <div className="text-6xl">🏆</div>
-          {winnerName && (
-            <div className="text-cyan-400 text-xl font-mono tracking-widest">{winnerName}</div>
-          )}
-          <h1 className="text-5xl font-black text-white tracking-widest" style={{ textShadow: '0 0 30px #ffd700' }}>ПОБЕДА!</h1>
-          <div className="flex gap-4 mt-4">
-            <button onClick={() => setScreen('mainMenu')}
-              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-purple-700 border border-purple-500 hover:bg-purple-600">
-              В меню
-            </button>
+      {screen === 'result' && (
+        <div className="min-h-screen bg-[#050510] flex flex-col items-center justify-center gap-6 relative overflow-hidden">
+          {/* Анимированный фон */}
+          <div className="absolute inset-0 pointer-events-none">
+            {Array.from({ length: 20 }).map((_, i) => (
+              <div key={i} className="absolute rounded-full"
+                style={{
+                  width: Math.random() * 4 + 1,
+                  height: Math.random() * 4 + 1,
+                  left: `${Math.random() * 100}%`,
+                  top: `${Math.random() * 100}%`,
+                  backgroundColor: `hsl(${260 + Math.random() * 80},100%,70%)`,
+                  opacity: Math.random() * 0.5 + 0.2,
+                  animation: `float${i % 3} ${3 + Math.random() * 4}s ease-in-out infinite alternate`,
+                }} />
+            ))}
           </div>
-        </div>
-      )}
 
-      {screen === 'defeat' && (
-        <div className="min-h-screen bg-[#050510] flex flex-col items-center justify-center gap-6">
-          <div className="text-6xl grayscale opacity-60">💀</div>
-          <h1 className="text-5xl font-black text-red-500 tracking-widest" style={{ textShadow: '0 0 30px #ef4444' }}>ПОРАЖЕНИЕ</h1>
-          <div className="flex gap-4 mt-4">
+          <div className="text-6xl mb-2">🏆</div>
+          <h1 className="text-5xl font-black text-white tracking-widest"
+            style={{ textShadow: '0 0 30px #ffd700, 0 0 60px #ffd70050' }}>
+            ПОБЕДА!
+          </h1>
+          {resultWinner && (
+            <div className="text-2xl font-black tracking-wide" style={{ color: '#fbbf24' }}>
+              {resultWinner}
+            </div>
+          )}
+          {resultLoser && (
+            <div className="text-gray-500 text-sm font-mono">побеждает над {resultLoser}</div>
+          )}
+
+          <div className="flex gap-4 mt-6">
+            <button onClick={() => setScreen('teamSetup')}
+              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-purple-700 border border-purple-500 hover:bg-purple-600 transition-all hover:scale-105">
+              🔄 Реванш
+            </button>
             <button onClick={() => setScreen('mainMenu')}
-              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-red-900 border border-red-600 hover:bg-red-800">
-              В меню
+              className="px-8 py-3 rounded-xl font-black text-white tracking-widest bg-gray-800 border border-gray-600 hover:bg-gray-700 transition-all">
+              ← Меню
             </button>
           </div>
         </div>
