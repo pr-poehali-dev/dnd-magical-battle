@@ -24,8 +24,8 @@ function charAsEnemy(char: Character, slot: number): Enemy {
   return {
     id: char.id + '_bot',
     name: char.name + ' (Бот)',
-    color: '#ef4444',
-    glowColor: '#f87171',
+    color: char.color,
+    glowColor: char.glowColor,
     hp: char.maxHp,
     maxHp: char.maxHp,
     tempHp: 0,

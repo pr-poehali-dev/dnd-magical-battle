@@ -148,8 +148,8 @@ export type BattleUnit = ({ kind: 'player'; data: Character } | { kind: 'enemy';
 };
 
 // ─── GRID ──────────────────────────────────────────────────────────────────
-export const GRID_COLS = 16;
-export const GRID_ROWS = 11;
+export const GRID_COLS = 24;
+export const GRID_ROWS = 16;
 export const CELL_PX   = 52;  // pixels per cell in render
 export const CELL_FT   = 5;   // feet per cell
 

@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
-  BattleState, BattleUnit, Skill, GRID_COLS, GRID_ROWS, CELL_PX, GridCell, Character, Enemy
+  BattleState, BattleUnit, Skill, GRID_COLS, GRID_ROWS, CELL_PX, GridCell
 } from '@/game/types';
 import {
   moveUnit, executeAttack, executeReversalRed, doDash, doDisengage, doJump,
@@ -20,14 +20,57 @@ interface Props {
 interface MoveAnim { unitId: string; fromX: number; fromY: number; toX: number; toY: number; startMs: number; durationMs: number }
 interface FlashAnim { unitId: string; kind: 'attack' | 'hit' | 'dodge'; startMs: number; durationMs: number }
 // Skill effect overlays on canvas (not tied to a unit position)
-interface SkillFx { id: string; kind: 'blue_wave' | 'red_explosion' | 'blink'; x: number; y: number; startMs: number; durationMs: number }
+interface SkillFx {
+  id: string;
+  kind: 'blue_wave' | 'red_explosion' | 'blink' | 'red_ball';
+  x: number; y: number;
+  startMs: number; durationMs: number;
+  // For red_ball: trajectory from attacker
+  fromX?: number; fromY?: number;
+}
 
 // ─── TILE DRAW ────────────────────────────────────────────────────────────────
 const TILE_GRASS = ['#2d4a1e','#2a461c','#31501f','#294219'];
 const TILE_DARK  = ['#1c3010','#1a2e0e','#1f3613','#192c0d'];
+const TILE_MOUNTAIN = ['#3a3530','#352f2a','#3d3733','#302a26'];
+
+function drawMountain(ctx: CanvasRenderingContext2D, cell: GridCell) {
+  const px = cell.x * CELL_PX, py = cell.y * CELL_PX, v = cell.tileVariant;
+  ctx.fillStyle = TILE_MOUNTAIN[v];
+  ctx.fillRect(px, py, CELL_PX, CELL_PX);
+  // Mountain peaks
+  const cx2 = px + CELL_PX / 2;
+  ctx.fillStyle = '#4a4440';
+  ctx.beginPath();
+  ctx.moveTo(cx2 - 14 + v * 2, py + CELL_PX);
+  ctx.lineTo(cx2 - 4 + v, py + 8);
+  ctx.lineTo(cx2 + 6 + v, py + CELL_PX);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#2e2a28';
+  ctx.beginPath();
+  ctx.moveTo(cx2 + 2, py + CELL_PX);
+  ctx.lineTo(cx2 + 10 - v * 2, py + 12 + v * 3);
+  ctx.lineTo(cx2 + 20 - v, py + CELL_PX);
+  ctx.closePath(); ctx.fill();
+  // Snow cap
+  ctx.fillStyle = 'rgba(220,220,220,0.55)';
+  ctx.beginPath();
+  ctx.moveTo(cx2 - 4 + v, py + 8);
+  ctx.lineTo(cx2, py + 18 + v * 2);
+  ctx.lineTo(cx2 + 6, py + 8 + v);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px, py, CELL_PX, CELL_PX);
+}
 
 function drawTile(ctx: CanvasRenderingContext2D, cell: GridCell) {
   const px = cell.x * CELL_PX, py = cell.y * CELL_PX, v = cell.tileVariant;
+  // Mountains on edge (blocked cells)
+  if (cell.terrain === 'blocked') {
+    drawMountain(ctx, cell);
+    return;
+  }
   ctx.fillStyle = TILE_GRASS[v];
   ctx.fillRect(px, py, CELL_PX, CELL_PX);
   ctx.strokeStyle = 'rgba(0,0,0,0.07)';
@@ -106,6 +149,7 @@ function drawUnit(
   onTree: boolean,
   flashAnims: FlashAnim[],
   now: number,
+  attackDirX: number = 1, // +1 = facing right (player), -1 = facing left (enemy)
 ) {
   const { data, teamId } = unit;
   if (data.isDead) return;
@@ -122,92 +166,188 @@ function drawUnit(
   const C = data.color;
   const isEnemy = teamId === 1;
   const bob = isCurrent ? Math.sin(now / 220) * 1.5 : 0;
+  const facingDir = attackDirX; // +1 facing right, -1 facing left
 
   ctx.save();
   ctx.globalAlpha = data.isUnconscious ? 0.35 : 1;
   ctx.translate(vx, vy - (onTree ? 8 : 0));
-  ctx.scale(scale, scale);
+  ctx.scale(scale * facingDir, scale); // flip horizontally based on facing
 
   // Shake on hit
   if (hitT >= 0 && hitT < 0.6) {
     const shake = Math.sin(hitT * 25) * 4 * (1 - hitT / 0.6);
-    ctx.translate(isEnemy ? shake : -shake, 0);
+    ctx.translate(-shake, 0); // always shake left in local space
   }
   // Dodge lean
   if (dodgeT >= 0 && dodgeT < 1) {
     const lean = Math.sin(dodgeT * Math.PI) * 8;
-    ctx.translate(isEnemy ? lean : -lean, Math.sin(dodgeT * Math.PI) * -5);
+    ctx.translate(-lean, Math.sin(dodgeT * Math.PI) * -5);
   }
 
   // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.2)';
-  ctx.beginPath(); ctx.ellipse(0, 19, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(0, 20, 13, 5, 0, 0, Math.PI * 2); ctx.fill();
 
-  // Legs
-  const legBob = isCurrent ? Math.sin(now / 200) * 1.8 : 0;
-  ctx.fillStyle = shadeColor(C, -30);
-  ctx.fillRect(-8, 6 + legBob, 6, 11);
-  ctx.fillRect(2, 6 - legBob, 6, 11);
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(-9, 15 + legBob, 7, 4);
-  ctx.fillRect(1, 15 - legBob, 7, 4);
+  // Legs — more detailed with knees
+  const legBob = isCurrent ? Math.sin(now / 200) * 2 : 0;
+  // Left leg
+  ctx.fillStyle = shadeColor(C, -40);
+  ctx.beginPath(); ctx.roundRect(-9, 5 + legBob, 7, 8, 2); ctx.fill();
+  ctx.fillStyle = shadeColor(C, -55);
+  ctx.beginPath(); ctx.roundRect(-9, 11 + legBob, 7, 8, [0,0,2,2]); ctx.fill();
+  // Shoe left
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.roundRect(-10, 17 + legBob, 9, 4, 2); ctx.fill();
+  // Right leg
+  ctx.fillStyle = shadeColor(C, -35);
+  ctx.beginPath(); ctx.roundRect(2, 5 - legBob, 7, 8, 2); ctx.fill();
+  ctx.fillStyle = shadeColor(C, -50);
+  ctx.beginPath(); ctx.roundRect(2, 11 - legBob, 7, 8, [0,0,2,2]); ctx.fill();
+  // Shoe right
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.roundRect(1, 17 - legBob, 9, 4, 2); ctx.fill();
 
-  // Body
+  // Belt
+  ctx.fillStyle = shadeColor(C, -60);
+  ctx.beginPath(); ctx.roundRect(-10, 3, 20, 4, 1); ctx.fill();
+  // Belt buckle
+  ctx.fillStyle = '#e5c97e';
+  ctx.beginPath(); ctx.roundRect(-2, 3.5, 4, 3, 1); ctx.fill();
+
+  // Body / torso
   ctx.fillStyle = C;
-  ctx.beginPath(); ctx.roundRect(-10, -12, 20, 19, [3,3,2,2]); ctx.fill();
-  const bg2 = ctx.createLinearGradient(-10, -12, 10, 7);
-  bg2.addColorStop(0, 'rgba(255,255,255,0.22)');
-  bg2.addColorStop(1, 'rgba(0,0,0,0.12)');
-  ctx.fillStyle = bg2;
-  ctx.beginPath(); ctx.roundRect(-10, -12, 20, 19, [3,3,2,2]); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(-10, -13, 20, 18, [4,4,2,2]); ctx.fill();
+  // Body highlight
+  const bodyGrad = ctx.createLinearGradient(-10, -13, 10, 5);
+  bodyGrad.addColorStop(0, 'rgba(255,255,255,0.28)');
+  bodyGrad.addColorStop(0.5, 'rgba(255,255,255,0.05)');
+  bodyGrad.addColorStop(1, 'rgba(0,0,0,0.18)');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath(); ctx.roundRect(-10, -13, 20, 18, [4,4,2,2]); ctx.fill();
+  // Collar
+  ctx.fillStyle = shadeColor(C, -25);
+  ctx.beginPath(); ctx.roundRect(-4, -13, 8, 5, [2,2,0,0]); ctx.fill();
 
-  // Arm punch animation
+  // ─ Arms ─
   const punchT = atkT >= 0 ? Math.sin(atkT * Math.PI) : 0;
-  const punchDir = isEnemy ? -1 : 1;
+  // Back arm (left in local space)
+  ctx.fillStyle = shadeColor(C, -20);
+  ctx.beginPath(); ctx.roundRect(-15, -10, 6, 12, 3); ctx.fill();
   ctx.fillStyle = shadeColor(C, -10);
-  ctx.fillRect(-14, -8, 5, 9);
-  ctx.fillRect(9, -8, 5, 9);
-  ctx.fillStyle = shadeColor(C, 15);
-  ctx.fillRect(9 + punchDir * punchT * 12, -8, 6, 9);
-  ctx.fillStyle = shadeColor(C, 28);
-  ctx.beginPath();
-  ctx.roundRect(8 + punchDir * punchT * 12, -2, 8, 7, 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(-12, 2, 3.5, 0, Math.PI * 2); ctx.fill();
+  // Front arm (punching)
+  const armExtend = punchT * 14;
+  ctx.fillStyle = shadeColor(C, 10);
+  ctx.beginPath(); ctx.roundRect(9, -10, 6, 12, 3); ctx.fill();
+  // Fist
+  ctx.fillStyle = shadeColor(C, 25);
+  ctx.beginPath(); ctx.roundRect(9 + armExtend, -4, 9, 8, 3); ctx.fill();
+  // Fist knuckle lines
+  ctx.strokeStyle = shadeColor(C, -10);
+  ctx.lineWidth = 0.8;
+  for (let k = 0; k < 3; k++) {
+    ctx.beginPath();
+    ctx.moveTo(11 + armExtend + k * 2.5, -4);
+    ctx.lineTo(11 + armExtend + k * 2.5, 4);
+    ctx.stroke();
+  }
 
-  // Head
-  ctx.fillStyle = shadeColor(C, 18);
-  ctx.beginPath(); ctx.arc(0, -20 + bob, 10, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.22)';
-  ctx.beginPath(); ctx.arc(-3, -25 + bob, 4, 0, Math.PI * 2); ctx.fill();
+  // ─ Head ─
+  // Neck
+  ctx.fillStyle = shadeColor(C, 5);
+  ctx.beginPath(); ctx.roundRect(-4, -16, 8, 5, 1); ctx.fill();
+  // Head shape
+  ctx.fillStyle = shadeColor(C, 20);
+  ctx.beginPath(); ctx.roundRect(-11, -30 + bob, 22, 18, 6); ctx.fill();
+  // Head top highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.beginPath(); ctx.ellipse(-2, -27 + bob, 6, 4, -0.3, 0, Math.PI * 2); ctx.fill();
 
-  // Eyes
-  ctx.fillStyle = isEnemy ? '#ff5555' : 'white';
-  ctx.beginPath(); ctx.arc(-4, -21 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(4, -21 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = isEnemy ? 'white' : '#1a1a2e';
-  ctx.beginPath(); ctx.arc(-4, -21 + bob, 1.2, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(4, -21 + bob, 1.2, 0, Math.PI * 2); ctx.fill();
+  // Hair band / headband detail
+  if (!isEnemy) {
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath(); ctx.roundRect(-11, -22 + bob, 22, 3, 1); ctx.fill();
+  } else {
+    // Enemy: spiky hair effect
+    for (let s = 0; s < 3; s++) {
+      ctx.fillStyle = shadeColor(C, 35);
+      ctx.beginPath();
+      ctx.moveTo(-8 + s * 6, -30 + bob);
+      ctx.lineTo(-5 + s * 6, -38 + bob);
+      ctx.lineTo(-2 + s * 6, -30 + bob);
+      ctx.closePath(); ctx.fill();
+    }
+  }
 
-  // Team dot
+  // Eyes — more expressive
+  const eyeY = -23 + bob;
+  // Eye whites
+  ctx.fillStyle = isEnemy ? '#330000' : 'white';
+  ctx.beginPath(); ctx.ellipse(-5, eyeY, 3.5, 2.8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(5, eyeY, 3.5, 2.8, 0, 0, Math.PI * 2); ctx.fill();
+  // Iris
+  ctx.fillStyle = isEnemy ? '#cc0000' : data.color;
+  ctx.beginPath(); ctx.arc(-5, eyeY, 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5, eyeY, 2.2, 0, Math.PI * 2); ctx.fill();
+  // Pupil
+  ctx.fillStyle = isEnemy ? '#ff3333' : '#000';
+  ctx.beginPath(); ctx.arc(-5, eyeY, 1.1, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5, eyeY, 1.1, 0, Math.PI * 2); ctx.fill();
+  // Eye shine
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath(); ctx.arc(-4.2, eyeY - 1, 0.8, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5.8, eyeY - 1, 0.8, 0, Math.PI * 2); ctx.fill();
+
+  // Mouth / expression
+  if (atkT >= 0 && atkT < 0.7) {
+    // Determined expression during attack
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(-4, -17 + bob); ctx.lineTo(4, -17 + bob); ctx.stroke();
+  }
+
+  // Team indicator dot (bottom right of body)
   ctx.fillStyle = teamId === 0 ? '#60a5fa' : '#f87171';
-  ctx.beginPath(); ctx.arc(10, -11, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(9, -2, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  // Character-specific details based on color
+  const isGojo = data.color === '#06B6D4' || data.id.includes('honored');
+  if (isGojo) {
+    // Gojo blindfold
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath(); ctx.roundRect(-11, -25 + bob, 22, 4, 2); ctx.fill();
+    // Six eyes glow
+    ctx.shadowBlur = 10; ctx.shadowColor = '#06b6d4';
+    ctx.fillStyle = 'rgba(6,182,212,0.55)';
+    ctx.beginPath(); ctx.roundRect(-11, -25 + bob, 22, 4, 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    // White hair detail
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath(); ctx.roundRect(-11, -30 + bob, 22, 6, [4,4,0,0]); ctx.fill();
+  }
 
   // Current / selected ring
   if (isCurrent || isSelected) {
-    ctx.shadowBlur = isCurrent ? 16 : 8;
+    ctx.save();
+    ctx.scale(1, 1); // ensure no flip for ring
+    ctx.shadowBlur = isCurrent ? 18 : 10;
     ctx.shadowColor = C;
-    ctx.strokeStyle = isCurrent ? 'rgba(255,255,255,0.85)' : `${C}cc`;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.arc(0, -1, 22, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = isCurrent ? 'rgba(255,255,255,0.9)' : `${C}cc`;
+    ctx.lineWidth = isCurrent ? 2.5 : 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.arc(0, -5, 24, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
     ctx.shadowBlur = 0;
+    ctx.restore();
   }
 
   // Hit overlay
   if (hitT >= 0 && hitT < 0.55) {
-    ctx.fillStyle = `rgba(255,60,60,${0.65 * (1 - hitT / 0.55)})`;
-    ctx.beginPath(); ctx.roundRect(-12, -30, 24, 50, 4); ctx.fill();
+    ctx.fillStyle = `rgba(255,50,50,${0.65 * (1 - hitT / 0.55)})`;
+    ctx.beginPath(); ctx.roundRect(-13, -32, 26, 56, 4); ctx.fill();
   }
   // Dodge overlay (yellow)
   if (dodgeT >= 0 && dodgeT < 1) {
@@ -269,6 +409,10 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   const [processing, setProcessing] = useState(false);
   const [hoveredCell, setHoveredCell] = useState<{ x: number; y: number } | null>(null);
   const [jumpMode, setJumpMode] = useState(false);
+  // Lapse Blue: после выбора цели — ждём куда кинуть
+  const [lapseBlueTargetId, setLapseBlueTargetId] = useState<string | null>(null);
+  // R-combo: после атаки Годжо — предложить Infinity Step
+  const [rComboState, setRComboState] = useState<{ afterState: BattleState; targetId: string } | null>(null);
   // ── Dice roll animation ───────────────────────────────────────────────────────
   const [diceAnim, setDiceAnim] = useState<{
     value: number; die: string; label: string; phase: 'rolling' | 'result' | 'fading';
@@ -298,6 +442,9 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
 
   const battleRef = useRef(battleState);
   battleRef.current = battleState;
+
+  const getUnitAfterUpdate = (state: BattleState, id: string) =>
+    state.units.find(u => u.data.id === id);
 
   const curUnit = getCurrentUnit(battleState);
   // В localPvP оба юнита — player, поэтому всегда isPlayerTurn
@@ -419,6 +566,15 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
           sorted.forEach(unit => {
             const vp = visualPosRef.current[unit.data.id];
             if (!vp) return;
+            // Determine facing: find nearest enemy and face them
+            const enemies = state.units.filter(u => u.teamId !== unit.teamId && !u.data.isUnconscious);
+            let facingDir = unit.teamId === 0 ? 1 : -1;
+            if (enemies.length > 0) {
+              const nearest = enemies.reduce((b, e) =>
+                Math.abs(e.data.gridX - unit.data.gridX) < Math.abs(b.data.gridX - unit.data.gridX) ? e : b
+              , enemies[0]);
+              facingDir = nearest.data.gridX >= unit.data.gridX ? 1 : -1;
+            }
             drawUnit(
               ctx, unit, vp.x, vp.y,
               getCurrentUnit(state).data.id === unit.data.id,
@@ -426,6 +582,7 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
               state.unitsOnTree.has(unit.data.id),
               flashAnimsRef.current,
               now,
+              facingDir,
             );
           });
 
@@ -475,6 +632,26 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
               ctx.strokeStyle = `rgba(216,180,254,${alpha})`;
               ctx.lineWidth = 2;
               ctx.beginPath(); ctx.arc(fx.x, fx.y, r3, 0, Math.PI * 2); ctx.stroke();
+            } else if (fx.kind === 'red_ball') {
+              // Travelling red orb from attacker to target
+              const fromX2 = fx.fromX ?? fx.x;
+              const fromY2 = fx.fromY ?? fx.y;
+              const ballX = fromX2 + (fx.x - fromX2) * t;
+              const ballY = fromY2 + (fx.y - fromY2) * t;
+              // Glow trail
+              const trailGrad = ctx.createRadialGradient(ballX, ballY, 0, ballX, ballY, 22);
+              trailGrad.addColorStop(0, `rgba(255,80,60,${alpha})`);
+              trailGrad.addColorStop(0.5, `rgba(220,30,10,${alpha * 0.5})`);
+              trailGrad.addColorStop(1, 'rgba(180,0,0,0)');
+              ctx.fillStyle = trailGrad;
+              ctx.beginPath(); ctx.arc(ballX, ballY, 22, 0, Math.PI * 2); ctx.fill();
+              // Core ball
+              ctx.shadowBlur = 20; ctx.shadowColor = '#ff4444';
+              ctx.fillStyle = `rgba(255,120,80,${alpha})`;
+              ctx.beginPath(); ctx.arc(ballX, ballY, 8, 0, Math.PI * 2); ctx.fill();
+              ctx.fillStyle = `rgba(255,220,200,${alpha * 0.9})`;
+              ctx.beginPath(); ctx.arc(ballX - 2, ballY - 2, 3, 0, Math.PI * 2); ctx.fill();
+              ctx.shadowBlur = 0;
             }
             ctx.restore();
           });
@@ -509,11 +686,13 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
   };
 
   // ── Helper: add skill FX on canvas ──────────────────────────────────────────
-  const addSkillFx = (kind: SkillFx['kind'], gridX: number, gridY: number, durationMs = 700) => {
+  const addSkillFx = (kind: SkillFx['kind'], gridX: number, gridY: number, durationMs = 700, fromGridX?: number, fromGridY?: number) => {
     const id = String(Math.random());
     const x = gridX * CELL_PX + CELL_PX / 2;
     const y = gridY * CELL_PX + CELL_PX / 2;
-    skillFxRef.current = [...skillFxRef.current, { id, kind, x, y, startMs: performance.now(), durationMs }];
+    const fromX = fromGridX !== undefined ? fromGridX * CELL_PX + CELL_PX / 2 : undefined;
+    const fromY = fromGridY !== undefined ? fromGridY * CELL_PX + CELL_PX / 2 : undefined;
+    skillFxRef.current = [...skillFxRef.current, { id, kind, x, y, startMs: performance.now(), durationMs, fromX, fromY }];
   };
 
   // ── Enemy AI (не работает в localPvP — оба игрока управляют сами) ───────────
@@ -522,7 +701,6 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     setProcessing(true);
     const t = setTimeout(() => {
       const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
-      const stateBeforeAttack = battleState; // snapshot before enemy acts
       const next = runEnemyTurn(battleState);
 
       // Check if enemy dealt melee damage to a player who has Manji Kick ready
@@ -586,11 +764,12 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     const curId = curUnit.data.id;
 
     if (jumpMode) {
+      // Прыжок: клик на любую клетку в радиусе 15ft (3 клетки евклид)
       const cell = battleState.grid[cy]?.[cx];
-      if (cell?.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0) {
+      const dist = Math.sqrt((cx - curUnit.data.gridX)**2 + (cy - curUnit.data.gridY)**2);
+      const jumpCells = (curUnit.data.speed / 2) / 5; // 3 клетки (15ft / 5ft)
+      if (dist <= jumpCells + 0.5 || (cell?.prop === 'tree' && (cell.treeHp ?? TREE_HP) > 0)) {
         onBattleUpdate(doJump(battleState, curId, cx, cy));
-      } else {
-        onBattleUpdate(doJump(battleState, curId));
       }
       setJumpMode(false);
       return;
@@ -615,7 +794,7 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
           addSkillFx('blink', curUnit.data.gridX, curUnit.data.gridY, 500);
           addSkillFx('blink', cx, cy, 500);
           const next2 = doInfinityStep(battleState, curId, anyUnit.data.id);
-          onBattleUpdate({ ...next2, selectedSkill: null, targetableCells: [] });
+          onBattleUpdate({ ...next2, selectedSkill: null, targetableCells: [], movementMode: false });
         }
         return;
       }
@@ -625,7 +804,11 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
         const inRange = battleState.targetableCells.some(c => c.x === cx && c.y === cy);
         if (!inRange) return;
         flash(curId, 'attack', 350);
-        addSkillFx('red_explosion', cx, cy, 900);
+        // Сначала летит красный шарик, потом взрыв
+        const travelDist = Math.sqrt((cx - curUnit.data.gridX)**2 + (cy - curUnit.data.gridY)**2);
+        const travelMs = Math.max(250, travelDist * 60);
+        addSkillFx('red_ball', cx, cy, travelMs, curUnit.data.gridX, curUnit.data.gridY);
+        setTimeout(() => addSkillFx('red_explosion', cx, cy, 900), travelMs - 50);
         const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
         const next = executeReversalRed(battleState, curId, cx, cy);
         const newLogs = next.log.slice(battleState.log.length);
@@ -633,9 +816,32 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
         if (diceLog?.diceResult) showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
         next.units.forEach(u => {
           const p = prevHps.get(u.data.id);
-          if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 300);
+          if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), travelMs + 200);
         });
-        onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [] });
+        onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [], movementMode: false });
+        return;
+      }
+
+      // ── Lapse Blue, этап 2: выбираем куда бросить ──
+      if (sk.id === 'lapse_blue' && lapseBlueTargetId) {
+        // Click anywhere to choose throw destination
+        flash(curId, 'attack', 350);
+        addSkillFx('blue_wave', curUnit.data.gridX, curUnit.data.gridY, 900);
+        const tgtUnit = battleState.units.find(u => u.data.id === lapseBlueTargetId);
+        if (tgtUnit) {
+          setTimeout(() => addSkillFx('blue_wave', tgtUnit.data.gridX, tgtUnit.data.gridY, 600), 250);
+        }
+        const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
+        const next = executeAttack(battleState, curId, sk, lapseBlueTargetId, isLocalPvp, cx, cy);
+        const newLogs = next.log.slice(battleState.log.length);
+        const diceLog = newLogs.find(l => l.diceResult);
+        if (diceLog?.diceResult) showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
+        next.units.forEach(u => {
+          const p = prevHps.get(u.data.id);
+          if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 400);
+        });
+        setLapseBlueTargetId(null);
+        onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [], movementMode: false });
         return;
       }
 
@@ -643,13 +849,21 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
       const tgt = battleState.units.find(u => u.data.gridX === cx && u.data.gridY === cy && !u.data.isUnconscious);
       if (tgt && tgt.teamId !== curUnit.teamId) {
         if (battleState.targetableCells.some(c => c.x === cx && c.y === cy)) {
-          flash(curId, 'attack', 350);
+          // Lapse Blue этап 1: выбор цели → потом ждём клик куда бросить
           if (sk.id === 'lapse_blue') {
-            addSkillFx('blue_wave', curUnit.data.gridX, curUnit.data.gridY, 800);
-            setTimeout(() => addSkillFx('blue_wave', tgt.data.gridX, tgt.data.gridY, 600), 200);
+            setLapseBlueTargetId(tgt.data.id);
+            // Покрасим доступные клетки для броска
+            onBattleUpdate({
+              ...battleState,
+              targetableCells: [],
+              reachableCells: [],
+            });
+            return;
           }
+
+          flash(curId, 'attack', 350);
           const prevHps = new Map(battleState.units.map(u => [u.data.id, u.data.hp]));
-          const next = executeAttack(battleState, curId, sk, tgt.data.id);
+          const next = executeAttack(battleState, curId, sk, tgt.data.id, isLocalPvp);
           const newLogs = next.log.slice(battleState.log.length);
           const diceLog = newLogs.find(l => l.diceResult);
           if (diceLog?.diceResult) showDice(diceLog.diceResult.total, diceLog.diceResult.die, diceLog.diceResult.die);
@@ -657,7 +871,16 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
             const p = prevHps.get(u.data.id);
             if (p !== undefined && u.data.hp < p) setTimeout(() => flash(u.data.id, 'hit', 450), 300);
           });
-          onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [] });
+
+          // R-combo: после атаки Годжо (не lapse_blue, не reversal_red) — предложить Infinity Step
+          const isGojoAttack = sk.id === 'gojo_rapid_punches' || sk.id === 'gojo_twofold_kick';
+          const gojoUnit = getUnitAfterUpdate(next, curId);
+          if (isGojoAttack && gojoUnit?.data.hasBonusAction) {
+            setRComboState({ afterState: next, targetId: tgt.data.id });
+            onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [], movementMode: false });
+          } else {
+            onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [], movementMode: false });
+          }
         }
       }
       return;
@@ -756,9 +979,6 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
     heal:'#22c55e', death:'#ef4444', system:'#7c3aed', save:'#a78bfa', special:'#fbbf24',
   };
 
-  // Manji Kick available check (for display in pending reaction)
-  const hasManjiKick = curPlayer?.unlockedSkills?.some(s => s.id === 'manji_kick' && s.currentCooldown === 0 && curPlayer.hasReaction);
-
   return (
     <div className="min-h-screen bg-[#0a0f0a] flex flex-col" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
       {/* TOP HUD */}
@@ -775,7 +995,8 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
               }}>
               <div className="w-2 h-2 rounded-full" style={{ backgroundColor: u.teamId === 0 ? '#60a5fa' : '#f87171' }} />
               {u.data.name.split(' ')[0].substring(0, 6)}
-              <span className="text-gray-600 font-mono text-xs">{u.data.hp}</span>
+              <span className="text-yellow-600 font-mono text-xs">({u.turnIndex})</span>
+              <span className="text-gray-600 font-mono text-xs">{u.data.hp}HP</span>
             </div>
           ))}
         </div>
@@ -871,6 +1092,51 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
             </div>
           )}
 
+          {/* Lapse Blue: выбор куда бросить */}
+          {lapseBlueTargetId && (
+            <div className="p-3 border-b border-cyan-700/50 bg-cyan-900/20">
+              <div className="text-cyan-300 font-black text-sm mb-1">🔵 LAPSE BLUE</div>
+              <div className="text-gray-300 text-xs mb-1">Цель притянута! Выбери клетку куда отбросить врага.</div>
+              <div className="text-xs text-cyan-400 mb-2">Кликни на любую клетку карты</div>
+              <button onClick={() => setLapseBlueTargetId(null)}
+                className="w-full py-1.5 rounded text-xs font-bold text-gray-400 border border-white/15 hover:bg-white/5">
+                Отмена
+              </button>
+            </div>
+          )}
+
+          {/* R-combo: Infinity Step после атаки */}
+          {rComboState && (
+            <div className="p-3 border-b border-purple-700/50 bg-purple-900/20">
+              <div className="text-purple-300 font-black text-sm mb-1">⚡ +R COMBO</div>
+              <div className="text-gray-300 text-xs mb-1">Добавить Infinity Step за бонусное действие?</div>
+              <div className="text-xs text-yellow-400 mb-2">Ещё бросок на попадание → 1к2 урона</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (!rComboState) return;
+                    const { afterState, targetId } = rComboState;
+                    const blinkSk = (curUnit.kind === 'player' ? curUnit.data.unlockedSkills : []).find(s => s.id === 'gojo_blink');
+                    if (!blinkSk) { setRComboState(null); return; }
+                    // Use Infinity Step as bonus action with extra damage
+                    const next = executeAttack(afterState, curUnit.data.id, blinkSk, targetId, isLocalPvp);
+                    flash(curUnit.data.id, 'attack', 300);
+                    addSkillFx('blink', curUnit.data.gridX, curUnit.data.gridY, 500);
+                    setRComboState(null);
+                    onBattleUpdate({ ...next, selectedSkill: null, targetableCells: [] });
+                  }}
+                  className="flex-1 py-2 rounded font-black text-xs text-white bg-purple-700 border border-purple-500 hover:bg-purple-600">
+                  ⚡ Да!
+                </button>
+                <button
+                  onClick={() => { onBattleUpdate({ ...rComboState.afterState, selectedSkill: null, targetableCells: [] }); setRComboState(null); }}
+                  className="flex-1 py-2 rounded font-bold text-xs text-gray-400 border border-white/15 hover:bg-white/5">
+                  Пропустить
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Manji Kick Reaction prompt */}
           {pendingReaction && (
             <div className="p-3 border-b border-purple-700/50 bg-purple-900/20 animate-pulse">
@@ -907,11 +1173,11 @@ export default function BattleScreen({ battleState, onBattleUpdate, onVictory, o
                       </div>
                     </div>
                     <div className="text-xs font-mono text-gray-500 mt-0.5">
-                      <span className="text-red-400">1к2</span> · уклонение + контратака
+                      <span className="text-red-400">{sk.damageDice.count}к{sk.damageDice.die.slice(1)}</span> · уклонение + контратака
                     </div>
                     <div className="text-xs text-gray-600 mt-0.5">{sk.description}</div>
-                    <div className={`text-xs mt-1 font-bold ${!onCd && curPlayer.hasReaction ? 'text-green-400' : 'text-gray-600'}`}>
-                      {onCd ? `Перезарядка: ${sk.currentCooldown} хода` : curPlayer.hasReaction ? '✅ Готова' : '❌ Реакция использована'}
+                    <div className={`text-xs mt-1 font-bold ${curPlayer.hasReaction ? 'text-green-400' : 'text-gray-600'}`}>
+                      {curPlayer.hasReaction ? '✅ Готова (ждёт ближней атаки)' : '❌ Реакция использована'}
                     </div>
                   </div>
                 );
